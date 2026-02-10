@@ -22,24 +22,14 @@ class CashAndCarryBot:
         """
         self.state_file = os.path.join("configs", "bot_state.json")
 
-        proxies = None
-        # Verifica se existem proxies configurados nas variáveis de ambiente (pelo utils.py)
-        if os.environ.get('HTTP_PROXY'):
-            proxies = {
-                'http': os.environ.get('HTTP_PROXY'),
-                'https': os.environ.get('HTTPS_PROXY')
-            }
-
         self.exchange_future = getattr(ccxt, EXCHANGE_ID)({
             'enableRateLimit': True,
             'options': {'defaultType': 'future'},
-            'proxies': proxies, 
             'verify': False  # Crucial para ambientes corporativos que interceptam SSL
         })
 
         self.exchange_spot = getattr(ccxt, EXCHANGE_ID)({
                 'enableRateLimit': True,
-                'proxies': proxies, 
                 'verify': False 
             })
 

@@ -8,15 +8,6 @@ import requests
 from configs.config import LOGGER, BRL_USD_RATE
 from tools.database import DataManager
 from tools.strategy import CashAndCarryBot
-from utils import configurar_ambiente_proxy
-
-# --- Configurações de Proxy do Usuário ---
-proxy_user = "ter.brunokawan"
-proxy_pass = "Kawan72643233"
-proxy_host = "10.15.54.113"
-proxy_porta = 8080
-
-configurar_ambiente_proxy(proxy_host=proxy_host, proxy_porta=proxy_porta, proxy_user=proxy_user, proxy_pass=proxy_pass)
 
 def get_live_usd_brl():
     """
