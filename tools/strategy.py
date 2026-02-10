@@ -7,33 +7,46 @@ import urllib3
 from datetime import datetime
 from configs.config import *
 
+# Desativa avisos de segurança para conexões via Proxy Corporativo (SSL Verify False)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class CashAndCarryBot:
-    def __init__(self, initial_capital_usd):
-        proxies = None
-        if os.environ.get('HTTP_PROXY'):
-            proxies = {
-                'http': os.environ.get('HTTP_PROXY'),
-                'https': os.environ.get('HTTPS_PROXY')
-            }
-
-        self.exchange = getattr(ccxt, EXCHANGE_ID)({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'future'}, # Default para dados de futuros
-            # [NOVO] Força o uso do proxy definido nas variáveis de ambiente
-            'proxies': proxies, 
-            # [NOVO] Desativa a verificação SSL. Essencial para proxies corporativos/internos
-            # que interceptam tráfego HTTPS, evitando erros de certificado.
-            'verify': False 
-        })
-
+    def __init__(self, initial_capital_usd, exchange_client=None):
+        """
+        Inicializa o Bot.
+        
+        Args:
+            initial_capital_usd (float): Capital inicial simulado.
+            exchange_client (obj, optional): Cliente de exchange Mock para backtests. 
+                                             Se None, conecta na Binance real via CCXT.
+        """
         self.state_file = os.path.join("configs", "bot_state.json")
+        
+        # INJEÇÃO DE DEPENDÊNCIA: 
+        # Se um cliente for passado (Simulação), usamos ele. 
+        # Caso contrário, configuramos a conexão real com suporte a Proxy.
+        if exchange_client:
+             self.exchange = exchange_client
+        else:
+            proxies = None
+            # Verifica se existem proxies configurados nas variáveis de ambiente (pelo utils.py)
+            if os.environ.get('HTTP_PROXY'):
+                proxies = {
+                    'http': os.environ.get('HTTP_PROXY'),
+                    'https': os.environ.get('HTTPS_PROXY')
+                }
+
+            self.exchange = getattr(ccxt, EXCHANGE_ID)({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'future'},
+                'proxies': proxies, 
+                'verify': False  # Crucial para ambientes corporativos que interceptam SSL
+            })
 
         # Inicialização de variáveis de estado
         if not self._load_state():
             self.capital = initial_capital_usd
-            self.position = None # Estrutura: {'symbol': str, 'size': float, 'entry_price': float, ...}
+            self.position = None 
             self.accumulated_profit = 0.0
             self.accumulated_fees = 0.0
             self.peak_capital = initial_capital_usd
@@ -43,8 +56,7 @@ class CashAndCarryBot:
 
     def _save_state(self):
         """
-        [NOVO] Salva as variáveis críticas em um arquivo JSON.
-        Deve ser chamado após qualquer alteração financeira ou de posição.
+        Persiste o estado financeiro e operacional em disco (JSON).
         """
         try:
             state = {
@@ -63,16 +75,13 @@ class CashAndCarryBot:
 
     def _load_state(self):
         """
-        [NOVO] Tenta carregar o estado do arquivo JSON.
-        Retorna True se sucesso, False se falha/arquivo não existe.
+        Carrega o estado anterior se existir. Retorna True se sucesso.
         """
         if not os.path.exists(self.state_file):
-            return False
-            
+            return False   
         try:
             with open(self.state_file, 'r') as f:
-                state = json.load(f)
-                
+                state = json.load(f)  
             self.capital = state.get('capital', 0.0)
             self.position = state.get('position')
             self.accumulated_profit = state.get('accumulated_profit', 0.0)
@@ -82,162 +91,148 @@ class CashAndCarryBot:
             self.next_funding_timestamp = state.get('next_funding_timestamp')
             
             LOGGER.info("Estado anterior carregado com SUCESSO.")
-            if self.position:
-                LOGGER.info(f"Retomando POS em: {self.position['symbol']}")
-            
             return True
         except Exception as e:
-            LOGGER.error(f"Erro ao carregar estado (arquivo corrompido?): {e}")
+            LOGGER.error(f"Erro ao carregar estado: {e}")
             return False
 
     def get_top_volume_pairs(self):
         """
-        [ALTERADO] Escaneia o mercado usando Filtro Dinâmico de Consistência
-        em vez de Whitelist fixa.
+        Realiza varredura no mercado buscando pares com alto volume 
+        e histórico consistente de Funding Rates.
         """
         try:
             LOGGER.info("Iniciando varredura dinâmica de mercado...")
             tickers = self.exchange.fetch_tickers()
             
-            # 1. Filtro Inicial: Volume Mínimo e Quote USDT
-            # Expandimos o universo para qualquer par que tenha volume decente
+            # 1. Pré-filtro: Volume Mínimo e pares USDT
             candidates = []
-            
             for symbol, data in tickers.items():
-                # Filtra apenas perpétuos USDT
                 if '/USDT:USDT' in symbol and data['quoteVolume'] >= MIN_24H_VOLUME_USD:
                     candidates.append(symbol)
             
-            LOGGER.info(f"Pre-filtro de volume: {len(candidates)} pares encontrados.")
-            
-            # 2. Filtro de Consistência de Funding (O Pulo do Gato)
+            # Ordena por volume decrescente e pega os Top 20 para análise detalhada
+            top_candidates = sorted(candidates, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:20]
             valid_pairs = []
-            
-            # Limitamos a analisar os top 20 por volume para não estourar API rate limit
-            # Ordena por volume decrescente
-            top_candidates = sorted(
-                candidates, 
-                key=lambda x: tickers[x]['quoteVolume'], 
-                reverse=True
-            )[:20]
 
             for symbol in top_candidates:
+                # Aplica o Filtro de Consistência (Funding Quality Score)
                 if self._analyze_funding_consistency(symbol):
                     valid_pairs.append(symbol)
-                    LOGGER.info(f"[APROVADO] filtro de consistência: {symbol}")
+                    LOGGER.info(f"[OK] APROVADO no filtro de consistência: {symbol}")
             
             return valid_pairs
-
         except Exception as e:
             LOGGER.error(f"Erro no scanner: {e}")
             return []
 
     def _analyze_funding_consistency(self, symbol):
         """
-        [NOVO] Analisa se o histórico de funding é consistente e seguro.
-        Regra: Média positiva nos últimos 3 dias e sem picos negativos graves.
+        Analisa o histórico recente de Funding Rates.
+        Critérios: Média positiva (3 dias) e ausência de taxas negativas.
         """
         try:
-            # Busca histórico das últimas ~100 taxas (mas só usaremos as recentes)
-            # Nota: Nem todas exchanges suportam histórico longo, mas Binance suporta bem.
+            # Busca histórico (limit=20 garante margem para pegar os últimos 3 dias/9 periodos)
             history = self.exchange.fetch_funding_rate_history(symbol, limit=20)
             
-            if not history or len(history) < 9:
-                return False # Dados insuficientes
+            if not history or len(history) < 9: 
+                return False
             
-            # Pega os últimos 9 pagamentos (aprox. 3 dias se for 8h/8h)
+            # Analisa os últimos 9 pagamentos (aprox. 3 dias em ciclos de 8h)
             recent_rates = [entry['fundingRate'] for entry in history[-9:]]
             
-            # Critério 1: Média deve ser atrativa (> 0.01% por período)
+            # Critério 1: Média atrativa (> 0.01% por período)
             avg_rate = sum(recent_rates) / len(recent_rates)
             if avg_rate < 0.0001: 
                 return False
 
-            # Critério 2: Consistência (Nenhum negativo nos últimos 3 dias)
-            # Isso evita moedas que oscilam demais
-            if any(r < 0 for r in recent_rates):
+            # Critério 2: Consistência (Nenhum negativo)
+            if any(r < 0 for r in recent_rates): 
                 return False
-                
-            # Critério 3: Evitar "Armadilhas de Pump" (Opcional)
-            # Se o último funding for 5x maior que a média, pode ser um pump artificial prestes a cair.
-            current_rate = recent_rates[-1]
-            if current_rate > (avg_rate * 5) and current_rate > 0.01:
-                LOGGER.warning(f"Ignorado {symbol}: Pico suspeito de funding (Pump Risk).")
-                return False
-
+            
             return True
-
-        except Exception as e:
-            # Alguns pares podem dar erro ao buscar histórico
+        except: 
             return False
 
-    def check_entry_opportunity(self, symbol):
+    def check_entry_opportunity(self, symbol, current_time=None):
         """
-        Avalia viabilidade de entrada baseada em Funding e Payback de taxas.
+        Avalia viabilidade de entrada com filtros rigorosos de ROI e Basis.
         """
         try:
+            now = current_time if current_time else time.time()
+
+            # 1. Filtro de Cooldown (Evita reentrada imediata após saída forçada)
+            if hasattr(self, 'cooldowns') and symbol in self.cooldowns:
+                if now < self.cooldowns[symbol]:
+                    return False, 0.0, "COOLDOWN_ACTIVE"
+
             funding_info = self.exchange.fetch_funding_rate(symbol)
             funding_rate = funding_info['fundingRate']
             
-            # Filtro 1: Funding Positivo Mínimo
-            if funding_rate <= MIN_FUNDING_RATE:
-                # CORREÇÃO CRÍTICA: Alterado de 'return False' para 'return False, 0.0'.
-                # O main.py espera desempacotar dois valores (is_viable, fr). Retornar apenas False causa o Crash.
-                return False, funding_rate, "LOW_FUNDING"
-
-            # Filtro 2: Payback das Taxas (Maker + Taker entrada e saída)
-            # Custo total estimado (abertura + fechamento)
-            total_fee_rate = (FEE_TAKER + FEE_MAKER) * 2 
-            # Lucro projetado em 3 dias (3 funding payouts por dia * 3 dias)
-            projected_return = funding_rate * 3 * DAYS_FOR_PAYBACK
-
-            if projected_return > total_fee_rate:
-                LOGGER.info(f"Oportunidade encontrada: {symbol} | FR: {funding_rate:.4%} | Proj. Retorno (3d): {projected_return:.4%}")
-                return True, funding_rate, "SUCCESS"
+            # 2. Filtro de ROI Mínimo vs Taxas (O "Pulo do Gato")
+            # Consideramos Taker na entrada e Taker na saída para segurança máxima
+            # Total de 4 execuções (2 no Spot, 2 no Futuro)
+            total_fees_estimated = (FEE_TAKER * 4) + (SLIPPAGE_SIMULATED * 4)
             
-            return False, funding_rate, "INSUFFICIENT_PAYBACK"
+            # Projeção de lucro em 24h (assumindo 3 pagamentos de funding)
+            projected_24h_return = funding_rate * 3 
+
+            # Só entra se o lucro de 1 dia pagar todas as taxas e ainda sobrar margem
+            if projected_24h_return < (total_fees_estimated * 1.2): # 20% de margem de segurança
+                return False, funding_rate, "LOW_PROFIT_VS_FEES"
+
+            # 3. Verificação de Basis (Evitar entrar em Backwardation)
+            symbol_spot = symbol.split(':')[0] 
+            ticker_future = self.exchange.fetch_ticker(symbol)
+            ticker_spot = self.exchange.fetch_ticker(symbol_spot)
+            
+            p_future = ticker_future['last']
+            p_spot = ticker_spot['last']
+            basis_percent = (p_future - p_spot) / p_spot
+
+            # Regra: O Futuro deve estar pelo menos "flat" ou em Contango
+            if basis_percent < NEGATIVE_FUNDING_THRESHOLD: # Tolerância mínima de 0.02%
+                return False, funding_rate, f"BACKWARDATION ({basis_percent:.4%})"
+
+            return True, funding_rate, "SUCCESS"
 
         except Exception as e:
             LOGGER.error(f"Erro ao verificar oportunidade para {symbol}: {e}")
-            return False, 0.0, f"API_ERROR: {str(e)}"
+            return False, 0.0, f"API_ERROR"
 
-    def simulate_entry(self, symbol, funding_rate):
+    def simulate_entry(self, symbol, funding_rate, current_time=None):
         """
-        Executa a lógica de entrada Delta-Neutro com simulação de slippage.
-        Divide o capital 50/50 entre Spot e Futuros.
+        Executa entrada simulada com 'Lag' de execução e Slippage.
         """
         try:
+            # Se current_time for passado (backtest), usa ele. Senão usa o real.
+            now = current_time if current_time else time.time()
+
+            # 1. Perna Spot
             ticker_spot = self.exchange.fetch_ticker(symbol)
             price_spot_raw = ticker_spot['last']
-            
-            # Aplica Slippage na compra (Paga mais caro)
             entry_price_long = price_spot_raw * (1 + SLIPPAGE_SIMULATED)
 
-            # Define alocação e quantidade baseada no preço Spot capturado
             allocation_per_leg = self.capital / 2
             quantity = allocation_per_leg / entry_price_long
 
-            # 2. Simulação de "Execution Lag" (Latência)
-            # Ocorre um atraso natural (rede, processamento da exchange) entre as ordens
-            lag_seconds = random.uniform(0.5, 2.0) # Gera atraso entre 500ms e 2 segundos
-            # LOGGER.info(f"Simulando latência de execução: {lag_seconds:.2f}s...") # Opcional: Descomentar para debug
-            time.sleep(lag_seconds)
-
-            # 3. Execução da Perna FUTURA (Atrasada)
-            # Busca o preço novamente para refletir se o mercado se moveu durante o lag
+            # 2. Simulação de Latência (Lag)
+            # Apenas aplicamos o sleep se estivermos em tempo real (current_time is None)
+            if current_time is None:
+                lag_seconds = random.uniform(0.5, 2.0)
+                time.sleep(lag_seconds)
+            
+            # 3. Perna Futura
             ticker_future = self.exchange.fetch_ticker(symbol)
             price_future_raw = ticker_future['last']
-
-            # Aplica Slippage na venda Short (Vende mais barato)
             entry_price_short = price_future_raw * (1 - SLIPPAGE_SIMULATED)
 
             # Cálculo de Taxas
-            # Taxa Spot + Taxa Futuros (Baseado no valor nocional de cada perna)
             cost_spot = (quantity * entry_price_long) * FEE_TAKER
             cost_future = (quantity * entry_price_short) * FEE_TAKER
             total_entry_fee = cost_spot + cost_future
 
-            # Configuração do Funding
+            # Configuração do Funding Timestamp
             funding_info = self.exchange.fetch_funding_rate(symbol)
             self.next_funding_timestamp = funding_info['nextFundingTimestamp'] / 1000
             
@@ -245,128 +240,108 @@ class CashAndCarryBot:
                 'symbol': symbol,
                 'size': quantity,
                 'entry_price_spot': entry_price_long,
-                'entry_price_future': entry_price_short, # Preço pode ser diferente do Spot devido ao lag
+                'entry_price_future': entry_price_short,
                 'current_funding_rate': funding_rate,
-                'entry_time': time.time()
+                'entry_time': now
             }
             
             self.accumulated_fees += total_entry_fee
             self.capital -= total_entry_fee 
             
-            # Log detalhado para auditoria de execução
-            diff_price = entry_price_short - entry_price_long
-            LOGGER.info(
-                f"ENTRADA EXECUTADA ({symbol}):\n"
-                f"   > Spot: ${entry_price_long:.2f} | Futuro: ${entry_price_short:.2f}\n"
-                f"   > Lag: {lag_seconds:.2f}s | Spread Exec: {diff_price:.2f}\n"
-                f"   > Qtd: {quantity:.4f} | Taxas Totais: ${total_entry_fee:.2f}"
-            )
-            
+            LOGGER.info(f"ENTRADA: {symbol} | Spot: {entry_price_long:.2f} | Fut: {entry_price_short:.2f} | Taxas: {total_entry_fee:.2f}")
             self._save_state()
             return True
-
         except Exception as e:
-            LOGGER.error(f"Erro na exec de entrada: {e}")
+            LOGGER.error(f"Erro entry: {e}")
             return False
 
-    def monitor_and_manage(self, db_manager):
+    def monitor_and_manage(self, db_manager, current_time=None):
         """
-        Monitora a posição aberta: checa margem, realiza pagamento de funding e atualiza logs.
+        Gerencia a posição: Verifica margem, coleta funding e atualiza logs.
         """
-        if not self.position:
-            return
+        if not self.position: return
 
+        now = current_time if current_time else time.time()
         symbol = self.position['symbol']
+        
         try:
-            # 1. Atualização de Dados de Mercado
+            # Atualização de Mercado
             ticker = self.exchange.fetch_ticker(symbol)
             current_price = ticker['last']
             
             funding_info = self.exchange.fetch_funding_rate(symbol)
             current_funding = funding_info['fundingRate']
             
-            # Obtém o timestamp do PRÓXIMO funding (em ms) informado pela API
+            # Helper para saber quando é o próximo funding segundo a API
             api_next_funding_ts = funding_info.get('nextFundingTimestamp')
-            # Converte para segundos para comparação
             api_next_funding_sec = api_next_funding_ts / 1000 if api_next_funding_ts else None
 
-            # 2. Lógica de Pagamento de Funding (Cash Flow Real) [NOVO]
-            current_time = time.time()
-            
-            # Se temos um horário agendado e o tempo atual já passou dele:
-            if self.next_funding_timestamp and current_time >= self.next_funding_timestamp:
-                
-                # Cálculo do Payout: Tamanho da Posição (em moedas) * Preço Atual * Taxa
-                # No Cash&Carry (Short), se Funding > 0, nós RECEBEMOS.
+            # --- Lógica de Recebimento de Funding ---
+            if self.next_funding_timestamp and now >= self.next_funding_timestamp:
                 funding_payout = (self.position['size'] * current_price) * current_funding
-                
                 self.accumulated_profit += funding_payout
                 
-                LOGGER.info(f"FUNDING RECEBIDO: {symbol} | Valor: ${funding_payout:.4f} | Taxa: {current_funding:.4%}")
-                
-                # Atualiza o agendamento para o próximo ciclo (evita receber 2x no mesmo ms)
-                # Usamos o dado fresco da API que já deve estar apontando para o futuro
-                if api_next_funding_sec and api_next_funding_sec > current_time:
+                # Agendamento do próximo pagamento
+                if current_time:
+                     # No modo Backtest, simplificamos somando 8h
+                     self.next_funding_timestamp += 28800
+                elif api_next_funding_sec and api_next_funding_sec > now:
+                    # No modo Real, confiamos na API
                     self.next_funding_timestamp = api_next_funding_sec
                 else:
-                    # Fallback de segurança: soma 8h se a API ainda não virou
+                    # Fallback
                     self.next_funding_timestamp += 28800 
 
-            # 3. Lógica de Segurança (Circuit Breaker)
+            # --- Circuit Breaker (Funding Negativo) ---
             if current_funding < NEGATIVE_FUNDING_THRESHOLD:
-                LOGGER.warning(f"CIRCUIT BREAKER: Funding negativo crit ({current_funding:.4%}). Saindo...")
+                LOGGER.warning(f"SAIDA FORÇADA: Funding negativo crítico ({current_funding:.4%})")
                 self._close_position(current_price, reason="Negative Funding")
                 return
 
-            # Checagem de Margem (Variação do preço contra o Short)
-            price_change_pct = (current_price - self.position['entry_price_future']) / self.position['entry_price_future']
-            
-            if price_change_pct > (1 - SAFETY_MARGIN_RATIO): 
-                LOGGER.warning("ALERTA: Margem pressionada. Preciso rebalanceamento.")
-
-            # 4. Cálculo de PnL Não Realizado (Variação de Patrimônio)
-            # Spot ganha na alta, Futuro (Short) perde na alta -> Tendem a zero
+            # --- Cálculo de PnL e Patrimônio ---
             spot_pnl = (current_price - self.position['entry_price_spot']) * self.position['size']
             future_pnl = (self.position['entry_price_future'] - current_price) * self.position['size']
             net_pnl_price = spot_pnl + future_pnl
             
-            # Patrimônio Total = Capital Inicial + Lucro Realizado (Funding) + Variação Latente
             total_equity = self.capital + self.accumulated_profit + net_pnl_price
-            drawdown = (self.peak_capital - total_equity) / self.peak_capital if self.peak_capital > 0 else 0
             
-            # Formatação de data para o Log (apenas visual)
-            next_funding_readable = datetime.fromtimestamp(self.next_funding_timestamp).strftime('%Y-%m-%d %H:%M:%S') if self.next_funding_timestamp else "N/A"
+            # Atualiza pico histórico para cálculo de Drawdown
+            if total_equity > self.peak_capital:
+                self.peak_capital = total_equity
+            
+            drawdown = (self.peak_capital - total_equity) / self.peak_capital if self.peak_capital > 0 else 0
 
-            # 5. Registro no Banco de Dados
+            # --- Logging ---
             log_data = {
                 'symbol': symbol,
                 'price_spot': current_price,
                 'price_future': current_price,
                 'funding_rate': current_funding,
-                'next_funding_time': next_funding_readable,
+                'next_funding_time': "SIMULATED" if current_time else datetime.fromtimestamp(self.next_funding_timestamp).strftime('%Y-%m-%d %H:%M:%S'),
                 'position_size': self.position['size'],
                 'simulated_fees': self.accumulated_fees,
-                # O lucro acumulado agora cresce a cada 8h
                 'accumulated_profit': self.accumulated_profit + net_pnl_price,
                 'max_drawdown': drawdown,
                 'action': 'HOLD'
             }
-            db_manager.log_state(log_data)
+            # Evita logar no banco se for backtest (o db_manager pode ser um Mock)
+            if hasattr(db_manager, 'log_state'):
+                db_manager.log_state(log_data)
             
-            # 6. Reinvestimento (Juros Compostos)
+            # Tenta reinvestir se houver caixa
             self._process_compounding(current_price)
-
             self._save_state()
 
         except Exception as e:
-            LOGGER.error(f"Erro no monitoramento: {e}")
+            LOGGER.error(f"Monitor error: {e}")
 
     def _close_position(self, current_price, reason):
         """
-        Fecha a posição, contabiliza taxas de saída e slippage.
+        Encerra a posição e contabiliza custos de saída.
         """
+        # Slippage na saída
         exit_price_long = current_price * (1 - SLIPPAGE_SIMULATED)
-        exit_price_short = current_price * (1 + SLIPPAGE_SIMULATED) # Compra short mais caro
+        exit_price_short = current_price * (1 + SLIPPAGE_SIMULATED)
         
         position_value = self.position['size'] * current_price
         exit_fee = (position_value * FEE_TAKER) * 2
@@ -374,62 +349,54 @@ class CashAndCarryBot:
         self.accumulated_fees += exit_fee
         self.capital -= exit_fee
         self.position = None
-        LOGGER.info(f"POS CLOSED. Motivo: {reason} | Taxas Saida: ${exit_fee:.2f}")
+        
+        LOGGER.info(f"POSIÇÃO ENCERRADA. Motivo: {reason} | Taxas: ${exit_fee:.2f}")
         self._save_state()
 
     def deposit_monthly_contribution(self, exchange_rate=None):
         """
-        Converte aporte em BRL para USD e adiciona ao saldo pendente.
+        Recebe aporte em BRL e converte para USD usando taxa fornecida.
         """
-        # Se uma taxa específica não for passada, usa a constante do config
         rate_to_use = exchange_rate if exchange_rate else BRL_USD_RATE
-        
         usd_amount = MONTHLY_CONTRIBUTION_BRL / rate_to_use
         self.pending_deposit_usd += usd_amount
-        
-        LOGGER.info(f"Aporte mensal registrado: R${MONTHLY_CONTRIBUTION_BRL:.2f} (Taxa: {rate_to_use:.2f}) -> ${usd_amount:.2f}")
+        LOGGER.info(f"Aporte: R${MONTHLY_CONTRIBUTION_BRL:.2f} (Tx: {rate_to_use:.2f}) -> ${usd_amount:.2f}")
 
     def _process_compounding(self, current_price):
         """
-        Verifica se o saldo pendente permite aumentar a posição (Juros Compostos).
-        Aplica cálculo de Preço Médio Ponderado para manter a precisão do PnL.
+        Aumenta a posição se houver saldo pendente (Juros Compostos),
+        recalculando o Preço Médio Ponderado.
         """
         if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
-            # 1. Definição dos preços da nova tranche (com slippage simulado)
-            # Mantém a coerência com a simulação de entrada original
+            # 1. Novos Preços
             new_entry_spot = current_price * (1 + SLIPPAGE_SIMULATED)
             new_entry_future = current_price * (1 - SLIPPAGE_SIMULATED)
 
-            # 2. Cálculo da nova quantidade baseada no capital disponível (50% por perna)
+            # 2. Nova Quantidade
             allocation_per_leg = self.pending_deposit_usd / 2
-            # Nota: Divide pelo preço real de execução (com slippage) para precisão do volume
             new_qty = allocation_per_leg / new_entry_spot
 
-            # 3. Recuperação dos dados atuais da posição
+            # 3. Dados Antigos
             old_qty = self.position['size']
             old_price_spot = self.position['entry_price_spot']
             old_price_future = self.position['entry_price_future']
             
             total_new_qty = old_qty + new_qty
 
-            # 4. Cálculo do Preço Médio Ponderado (Weighted Average Price)
-            # Fórmula: ((Preço Antigo * Qtd Antiga) + (Preço Novo * Qtd Nova)) / Qtd Total
+            # 4. Cálculo Preço Médio Ponderado (Weighted Average)
             avg_price_spot = ((old_price_spot * old_qty) + (new_entry_spot * new_qty)) / total_new_qty
             avg_price_future = ((old_price_future * old_qty) + (new_entry_future * new_qty)) / total_new_qty
 
-            # 5. Atualização da Posição
+            # 5. Atualização
             self.position['size'] = total_new_qty
             self.position['entry_price_spot'] = avg_price_spot
             self.position['entry_price_future'] = avg_price_future
             
-            # Consome o depósito e atualiza capital contábil
+            # Contabilidade
             self.capital += self.pending_deposit_usd
-            
-            # Deduz taxas da nova entrada (Simulação de Taker)
             reinvest_fees = (allocation_per_leg * FEE_TAKER) * 2
             self.accumulated_fees += reinvest_fees
             self.capital -= reinvest_fees
-
             self.pending_deposit_usd = 0.0
             
-            LOGGER.info(f"REINVESTIMENTO: +{new_qty:.4f} moedas. Novo Preço AVG Spot: ${avg_price_spot:.2f} | Futuro: ${avg_price_future:.2f}")
+            LOGGER.info(f"REINVESTIMENTO: +{new_qty:.4f} moedas. Novo PM Spot: ${avg_price_spot:.2f}")
