@@ -1,71 +1,99 @@
 import sqlite3
-import pandas as pd
+import json
 from datetime import datetime
 from configs.config import LOGGER
 
 class DataManager:
-    def __init__(self, db_name="databases/database.db"):
+    def __init__(self, db_name):
         """
-        Inicializa a conexão com o banco de dados e cria a tabela se não existir.
+        Gerenciador de Banco de Dados SQLite.
+        Cria as tabelas automaticamente se não existirem.
         """
-        self.conn = sqlite3.connect(db_name)
-        self.cursor = self.conn.cursor()
-        self._setup_tables()
+        self.db_name = db_name
+        self.conn = None
+        self._connect()
+        self._create_tables()
 
-    def _setup_tables(self):
-        """
-        Define o esquema da tabela de logs de operação.
-        """
-        query_trade = """
-        CREATE TABLE IF NOT EXISTS trade_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME,
-            symbol TEXT,
-            price_spot REAL,
-            price_future REAL,
-            funding_rate REAL,
-            next_funding_time DATETIME,
-            position_size REAL,
-            simulated_fees REAL,
-            accumulated_profit REAL,
-            max_drawdown REAL,
-            action TEXT
-        )
-        """
-        self.cursor.execute(query_trade)
+    def _connect(self):
+        try:
+            self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
+        except Exception as e:
+            LOGGER.error(f"Erro ao conectar no DB: {e}")
 
-        query_scan = """
-        CREATE TABLE IF NOT EXISTS scanner_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME,
-            total_analyzed INTEGER,
-            passed_volume INTEGER,
-            best_funding REAL,
-            best_pair TEXT,
-            reason TEXT
-        )
-        """
-        self.cursor.execute(query_scan)
+    def close(self):
+        if self.conn:
+            self.conn.close()
 
-        self.conn.commit()
+    def _create_tables(self):
+        try:
+            cursor = self.conn.cursor()
+            
+            # Tabela de Scanners (Tentativas de encontrar pares)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS scan_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    total_analyzed INTEGER,
+                    passed_volume INTEGER,
+                    best_funding REAL,
+                    best_pair TEXT,
+                    reason TEXT
+                )
+            ''')
 
-    def log_state(self, data: dict):
+            # Tabela de Monitoramento de Posição (Log financeiro)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS position_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    symbol TEXT,
+                    price_future REAL,
+                    funding_rate REAL,
+                    next_funding_time TEXT,
+                    position_size REAL,
+                    simulated_fees REAL,
+                    accumulated_profit REAL,
+                    max_drawdown REAL,
+                    action TEXT
+                )
+            ''')
+            self.conn.commit()
+        except Exception as e:
+            LOGGER.error(f"Erro ao criar tabelas: {e}")
+
+    def log_scan_attempt(self, data):
         """
-        Registra o estado atual da operação no banco de dados.
-        Argumentos:
-            data (dict): Dicionário contendo os dados da coluna.
+        Registra o resultado de um scanner de mercado.
         """
         try:
-            query = """
-            INSERT INTO trade_logs (
-                timestamp, symbol, price_spot, price_future, funding_rate, 
-                next_funding_time, position_size, simulated_fees, accumulated_profit, max_drawdown, action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            values = (
-                datetime.now(),
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO scan_logs (total_analyzed, passed_volume, best_funding, best_pair, reason)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                data.get('total_analyzed', 0),
+                data.get('passed_volume', 0),
+                data.get('best_funding', 0.0),
+                str(data.get('best_pair', 'N/A')),
+                data.get('reason', 'UNKNOWN')
+            ))
+            self.conn.commit()
+        except Exception as e:
+            LOGGER.error(f"Erro ao logar scan: {e}")
+
+    def log_state(self, data):
+        """
+        Registra o estado financeiro atual da posição.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO position_logs (
+                    symbol, price_future, funding_rate, next_funding_time, 
+                    position_size, simulated_fees, accumulated_profit, max_drawdown, action
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
                 data.get('symbol'),
-                data.get('price_spot'),
                 data.get('price_future'),
                 data.get('funding_rate'),
                 data.get('next_funding_time'),
@@ -73,35 +101,8 @@ class DataManager:
                 data.get('simulated_fees'),
                 data.get('accumulated_profit'),
                 data.get('max_drawdown'),
-                data.get('action', 'MONITOR')
-            )
-            self.cursor.execute(query, values)
+                data.get('action')
+            ))
             self.conn.commit()
         except Exception as e:
-            LOGGER.error(f"Erro ao salvar log no banco de dados: {e}")
-
-    def log_scan_attempt(self, data: dict):
-        """
-        Registra o resultado de um ciclo de escaneamento de mercado.
-        """
-        try:
-            query = """
-            INSERT INTO scanner_logs (
-                timestamp, total_analyzed, passed_volume, best_funding, best_pair, reason
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """
-            values = (
-                datetime.now(),
-                data.get('total_analyzed'),
-                data.get('passed_volume'),
-                data.get('best_funding'),
-                data.get('best_pair'),
-                data.get('reason')
-            )
-            self.cursor.execute(query, values)
-            self.conn.commit()
-        except Exception as e:
-            LOGGER.error(f"Erro ao salvar log de scan: {e}")
-
-    def close(self):
-        self.conn.close()
+            LOGGER.error(f"Erro ao logar estado: {e}")

@@ -1,19 +1,19 @@
 import os
+from configs.config import LOGGER
 
-def configurar_ambiente_proxy(proxy_host=None, proxy_porta=None, proxy_user=None, proxy_pass=None):
+def configurar_ambiente_proxy(proxy_host, proxy_porta, proxy_user, proxy_pass):
     """
-    Configura as variáveis de ambiente para o proxy.
+    Configura variáveis de ambiente para Proxy HTTP/HTTPS.
+    Crucial para redes corporativas.
     """
-    print("Configurando variáveis de ambiente para o proxy...")
-    os.environ['WDM_SSL_VERIFY'] = '0'
-    os.environ['NO_PROXY'] = 'localhost,127.0.0.1'
+    if not proxy_host:
+        return
+
+    # Monta a string de conexão autenticada
+    # Formato: http://user:pass@host:port
+    proxy_url = f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_porta}"
+
+    os.environ['HTTP_PROXY'] = proxy_url
+    os.environ['HTTPS_PROXY'] = proxy_url
     
-    if proxy_host and proxy_porta:
-        if proxy_user and proxy_pass:
-            proxy_url = f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_porta}"
-        else:
-            proxy_url = f"http://{proxy_host}:{proxy_porta}"
-
-        os.environ['HTTP_PROXY'] = proxy_url
-        os.environ['HTTPS_PROXY'] = proxy_url
-        print(f"Proxy configurado.")
+    LOGGER.info(f"Ambiente de Proxy configurado para: {proxy_host}:{proxy_porta}")

@@ -1,13 +1,16 @@
 import os
+import re
 import time
 from datetime import datetime
 from collections import Counter
+from difflib import SequenceMatcher
 import requests
 from configs.config import LOGGER, BRL_USD_RATE
 from tools.database import DataManager
 from tools.strategy import CashAndCarryBot
 from utils import configurar_ambiente_proxy
 
+# --- Configurações de Proxy do Usuário ---
 proxy_user = "ter.brunokawan"
 proxy_pass = "Kawan72643233"
 proxy_host = "10.15.54.113"
@@ -43,8 +46,7 @@ def main():
     last_deposit_check = time.time()
     deposit_interval = 2592000 # 30 dias (Simulação simplificada)
 
-    # --- [ALTERADO] Configuração do Banco de Dados (INÍCIO) ---
-    # Instancia a conexão fora do loop para manter persistência e eficiência
+    # Configuração do Banco de Dados
     db_dir = "databases"
     os.makedirs(db_dir, exist_ok=True)
     
@@ -55,14 +57,12 @@ def main():
 
     db_manager = DataManager(db_name=db_path)
     LOGGER.info(f"Conectado ao banco de dados: {db_name}")
-    # --- [ALTERADO] Configuração do Banco de Dados (FIM) ---
 
     try:
         while True:
             current_time = time.time()
 
-            # --- [NOVO] Verificação de Rotação de Mês ---
-            # Se o mês mudou, fecha o DB atual e abre um novo
+            # Verificação de Rotação de Mês
             new_month = datetime.now().strftime('%m-%Y')
             if new_month != current_month:
                 LOGGER.info(f"Virada de mês detectada ({current_month} -> {new_month}). Rotacionando DB...")
@@ -73,7 +73,6 @@ def main():
                 db_path = os.path.join(db_dir, db_name)
                 
                 db_manager = DataManager(db_name=db_path)
-            # ---------------------------------------------
 
             # 1. Simulação de Aporte Mensal
             if current_time - last_deposit_check > deposit_interval:
@@ -87,19 +86,135 @@ def main():
                 if current_time - last_scan_time > scan_interval:
                     top_pairs = bot.get_top_volume_pairs()
 
+                    # --- [CORREÇÃO CRÍTICA] Batch Fetching Híbrido (Spot + Futures) ---
+                    all_tickers = {}
+                    all_funding = {}
+                    
+                    if top_pairs:
+                        try:
+                            LOGGER.info("Baixando dados de mercado (Spot + Futures) e Funding...")
+                            
+                            # 1. Busca Tickers de Futuros (onde operamos)
+                            # Retorna chaves como 'BTC/USDT:USDT'
+                            tickers_futures = bot.exchange_future.fetch_tickers()
+                            
+                            # 2. Busca Tickers de Spot (para calcular o preço base)
+                            # Retorna chaves como 'BTC/USDT'
+                            # NOTA: Requer que bot.exchange_spot tenha sido criado no strategy.py
+                            tickers_spot = bot.exchange_spot.fetch_tickers()
+                            
+                            # 3. Funde os dicionários
+                            # Isso garante que teremos tanto a chave 'BTC/USDT' quanto 'BTC/USDT:USDT'
+                            all_tickers = {**tickers_futures, **tickers_spot}
+                            
+                            # 4. Busca Funding Rates
+                            try:
+                                all_funding = bot.exchange_future.fetch_funding_rates()
+                            except Exception as fr_error:
+                                LOGGER.warning(f"Fetch funding em lote falhou: {fr_error}. Usará fallback individual.")
+                                all_funding = {}
+                                
+                        except Exception as e:
+                            LOGGER.error(f"Erro crítico ao baixar dados em lote: {e}")
+                            time.sleep(10)
+                            continue
+                    # ------------------------------------------------------------------
+
                     # Variáveis para estatísticas do log de scanner
                     best_fr = -100.0
                     best_pair = None
                     reasons = []
                     final_reason = "ENTRY_EXECUTED"
 
-                    # Se a lista estiver vazia, evita erro no loop
                     if not top_pairs:
                         LOGGER.warning("Nenhum par encontrado no filtro de volume.")
                         final_reason = "NO_VOLUME"
                     
                     for pair in top_pairs:
-                        is_viable, fr, reason = bot.check_entry_opportunity(pair)
+                        try:
+                            # 1. Definições Iniciais
+                            # pair futura ex: 'POWER/USDT:USDT'
+                            symbol_spot_candidate = pair.split(':')[0] 
+                            base_future_raw = pair.split('/')[0] # 'POWER'
+                            
+                            # Limpeza inteligente de prefixos numéricos (1000PEPE -> PEPE)
+                            base_future_clean = re.sub(r"^\d+", "", base_future_raw)
+
+                            found_spot = None
+                            
+                            # ESTRATÉGIA A: Busca Direta (A mais segura e rápida)
+                            if symbol_spot_candidate in tickers_spot:
+                                found_spot = symbol_spot_candidate
+                            
+                            # ESTRATÉGIA B: Busca Heurística (Se a direta falhou)
+                            # Só entra aqui se não achou 'POWER/USDT' direto
+                            else:
+                                best_match_score = 0
+                                best_match_symbol = None
+
+                                for s_symbol, s_data in tickers_spot.items():
+                                    # Filtra apenas pares USDT e ignora preços zerados
+                                    if not s_symbol.endswith('/USDT') or s_data['last'] == 0:
+                                        continue
+                                    
+                                    base_spot = s_symbol.split('/')[0] # ex: 'POWR'
+
+                                    # [NOVO] MARCADOR 1: Similaridade de Texto (Levenshtein)
+                                    # Compara 'PEPE' (future limpo) com 'PEPE' (spot) -> 1.0 (100%)
+                                    # Compara 'POWER' (future) com 'POWR' (spot) -> 0.88 (88%)
+                                    # Compara 'USDC' com 'USDT' -> 0.75 (75%)
+                                    similarity = SequenceMatcher(None, base_future_clean, base_spot).ratio()
+                                    
+                                    # Só consideramos candidatos com alta similaridade textual (>80%)
+                                    if similarity < 0.80:
+                                        continue
+
+                                    # [NOVO] MARCADOR 2: Validação de Preço (O "Tira-Teima")
+                                    # Se o texto é parecido, o preço TEM que ser quase idêntico.
+                                    price_fut = tickers_futures[pair]['last']
+                                    price_spt = s_data['last']
+                                    price_diff = abs(price_fut - price_spt) / price_spt
+                                    
+                                    # Se a diferença for maior que 1.5%, rejeita (evita tokens v1/v2 ou scams)
+                                    if price_diff > 0.015:
+                                        continue
+                                    
+                                    # Se passou nos dois testes e é o "melhor" até agora, guarda
+                                    if similarity > best_match_score:
+                                        best_match_score = similarity
+                                        best_match_symbol = s_symbol
+
+                                if best_match_symbol:
+                                    found_spot = best_match_symbol
+                                    # Log de auditoria para você ver a "mágica" acontecendo
+                                    LOGGER.info(f"Link Inteligente: {pair} <-> {found_spot} (Score Texto: {best_match_score:.2f})")
+
+                            # --- Verificações Finais ---
+                            if not found_spot:
+                                reasons.append(f"MISSING_SPOT_DATA ({base_future_clean})")
+                                continue
+
+                            price_future = all_tickers[pair]['last']
+                            price_spot = all_tickers[found_spot]['last']
+
+                            # Obtém Funding Rate
+                            if pair in all_funding:
+                                fr_rate = all_funding[pair]['fundingRate']
+                            else:
+                                fr_data = bot.exchange_future.fetch_funding_rate(pair)
+                                fr_rate = fr_data['fundingRate']
+
+                            # Passa os dados já processados
+                            is_viable, fr, reason = bot.check_entry_opportunity(
+                                pair, 
+                                price_spot=price_spot, 
+                                price_future=price_future, 
+                                funding_rate=fr_rate
+                            )
+                        except Exception as e:
+                            LOGGER.error(f"Erro ao processar par {pair}: {e}")
+                            reasons.append("PROCESSING_ERROR")
+                            continue
 
                         if fr > best_fr:
                             best_fr = fr
@@ -108,15 +223,14 @@ def main():
                         reasons.append(reason)
 
                         if is_viable:
+                            # Executa entrada (ainda faz fetch interno para precisão de ordem)
                             success = bot.simulate_entry(pair, fr)
                             if success:
-                                break # Entra em apenas uma posição por vez
+                                break 
                         else:
-                            # Se não entrou, define o motivo mais comum para log
                             if reasons:
                                 final_reason = Counter(reasons).most_common(1)[0][0]
 
-                    # Garante que best_pair tenha valor para o log mesmo se não houve entrada
                     if best_pair is None and top_pairs:
                          best_pair = top_pairs[0]
 
@@ -130,10 +244,10 @@ def main():
 
                     last_scan_time = current_time
             else:
-                # Se tem posição, monitora (agora com persistência e cash flow real)
+                # Se tem posição, monitora
                 bot.monitor_and_manage(db_manager)
 
-            # Aguarda próximo ciclo (evita flood de CPU/API)
+            # Aguarda próximo ciclo
             time.sleep(60) 
 
     except KeyboardInterrupt:
@@ -141,7 +255,6 @@ def main():
     except Exception as e:
         LOGGER.critical(f"Erro fatal no loop principal: {e}")
     finally:
-        # [NOVO] Garante o fechamento limpo da conexão
         try:
             db_manager.close()
             LOGGER.info("Conexão com banco de dados encerrada.")
