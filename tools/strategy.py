@@ -83,7 +83,7 @@ class CashAndCarryBot:
             
             LOGGER.info("Estado anterior carregado com SUCESSO.")
             if self.position:
-                LOGGER.info(f"Retomando posição em: {self.position['symbol']}")
+                LOGGER.info(f"Retomando POS em: {self.position['symbol']}")
             
             return True
         except Exception as e:
@@ -108,7 +108,7 @@ class CashAndCarryBot:
                 if '/USDT:USDT' in symbol and data['quoteVolume'] >= MIN_24H_VOLUME_USD:
                     candidates.append(symbol)
             
-            LOGGER.info(f"Pré-filtro de volume: {len(candidates)} pares encontrados.")
+            LOGGER.info(f"Pre-filtro de volume: {len(candidates)} pares encontrados.")
             
             # 2. Filtro de Consistência de Funding (O Pulo do Gato)
             valid_pairs = []
@@ -258,7 +258,7 @@ class CashAndCarryBot:
             LOGGER.info(
                 f"ENTRADA EXECUTADA ({symbol}):\n"
                 f"   > Spot: ${entry_price_long:.2f} | Futuro: ${entry_price_short:.2f}\n"
-                f"   > Lag: {lag_seconds:.2f}s | Spread Execução: {diff_price:.2f}\n"
+                f"   > Lag: {lag_seconds:.2f}s | Spread Exec: {diff_price:.2f}\n"
                 f"   > Qtd: {quantity:.4f} | Taxas Totais: ${total_entry_fee:.2f}"
             )
             
@@ -266,7 +266,7 @@ class CashAndCarryBot:
             return True
 
         except Exception as e:
-            LOGGER.error(f"Erro na execução de entrada: {e}")
+            LOGGER.error(f"Erro na exec de entrada: {e}")
             return False
 
     def monitor_and_manage(self, db_manager):
@@ -314,7 +314,7 @@ class CashAndCarryBot:
 
             # 3. Lógica de Segurança (Circuit Breaker)
             if current_funding < NEGATIVE_FUNDING_THRESHOLD:
-                LOGGER.warning(f"CIRCUIT BREAKER: Funding negativo crítico ({current_funding:.4%}). Saindo...")
+                LOGGER.warning(f"CIRCUIT BREAKER: Funding negativo crit ({current_funding:.4%}). Saindo...")
                 self._close_position(current_price, reason="Negative Funding")
                 return
 
@@ -322,7 +322,7 @@ class CashAndCarryBot:
             price_change_pct = (current_price - self.position['entry_price_future']) / self.position['entry_price_future']
             
             if price_change_pct > (1 - SAFETY_MARGIN_RATIO): 
-                LOGGER.warning("ALERTA: Margem pressionada. Rebalanceamento necessário.")
+                LOGGER.warning("ALERTA: Margem pressionada. Preciso rebalanceamento.")
 
             # 4. Cálculo de PnL Não Realizado (Variação de Patrimônio)
             # Spot ganha na alta, Futuro (Short) perde na alta -> Tendem a zero
@@ -374,7 +374,7 @@ class CashAndCarryBot:
         self.accumulated_fees += exit_fee
         self.capital -= exit_fee
         self.position = None
-        LOGGER.info(f"POSIÇÃO FECHADA. Motivo: {reason} | Taxas Saída: ${exit_fee:.2f}")
+        LOGGER.info(f"POS CLOSED. Motivo: {reason} | Taxas Saida: ${exit_fee:.2f}")
         self._save_state()
 
     def deposit_monthly_contribution(self, exchange_rate=None):
@@ -432,4 +432,4 @@ class CashAndCarryBot:
 
             self.pending_deposit_usd = 0.0
             
-            LOGGER.info(f"REINVESTIMENTO: +{new_qty:.4f} moedas. Novo Preço Médio Spot: ${avg_price_spot:.2f} | Futuro: ${avg_price_future:.2f}")
+            LOGGER.info(f"REINVESTIMENTO: +{new_qty:.4f} moedas. Novo Preço AVG Spot: ${avg_price_spot:.2f} | Futuro: ${avg_price_future:.2f}")
