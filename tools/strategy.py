@@ -3,12 +3,8 @@ import os
 import random
 import ccxt
 import time
-import urllib3
 from datetime import datetime
 from configs.config import *
-
-# Desativa avisos de segurança para conexões via Proxy Corporativo (SSL Verify False)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class CashAndCarryBot:
     def __init__(self, initial_capital_usd):
@@ -22,16 +18,15 @@ class CashAndCarryBot:
         """
         self.state_file = os.path.join("configs", "bot_state.json")
 
-        self.exchange_future = getattr(ccxt, EXCHANGE_ID)({
+        self.exchange_swap = getattr(ccxt, EXCHANGE_ID)({
             'enableRateLimit': True,
-            'options': {'defaultType': 'future'},
-            'verify': False  # Crucial para ambientes corporativos que interceptam SSL
+            'options': {'defaultType': 'swap'},
         })
 
         self.exchange_spot = getattr(ccxt, EXCHANGE_ID)({
-                'enableRateLimit': True,
-                'verify': False 
-            })
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
 
         # Inicialização de variáveis de estado
         if not self._load_state():
@@ -93,7 +88,7 @@ class CashAndCarryBot:
         """
         try:
             LOGGER.info("Iniciando varredura dinâmica de mercado...")
-            tickers = self.exchange_future.fetch_tickers()
+            tickers = self.exchange_swap.fetch_tickers()
             
             # 1. Pré-filtro: Volume Mínimo e pares USDT
             candidates = []
@@ -123,7 +118,7 @@ class CashAndCarryBot:
         """
         try:
             # Busca histórico (limit=20 garante margem para pegar os últimos 3 dias/9 periodos)
-            history = self.exchange_future.fetch_funding_rate_history(symbol, limit=20)
+            history = self.exchange_swap.fetch_funding_rate_history(symbol, limit=20)
             
             if not history or len(history) < 9: 
                 return False
@@ -144,12 +139,12 @@ class CashAndCarryBot:
         except: 
             return False
 
-    def check_entry_opportunity(self, symbol, price_spot, price_future, funding_rate, current_time=None):
+    def check_entry_opportunity(self, symbol, price_spot, price_swap, funding_rate, current_time=None):
         """
         Avalia viabilidade de entrada.
         Args:
             price_spot (float): Preço atual do Spot.
-            price_future (float): Preço atual do Futuro.
+            price_swap (float): Preço atual do Futuro.
             funding_rate (float): Taxa de funding atual.
         """
         try:
@@ -161,8 +156,8 @@ class CashAndCarryBot:
                     return False, 0.0, "COOLDOWN_ACTIVE"
             
             # 2. Taxas
-            real_fee_spot = self._get_real_fee_rate(symbol, future=False)
-            real_fee_future = self._get_real_fee_rate(symbol, future=True)
+            real_fee_spot = self._get_real_fee_rate(symbol, swap=False)
+            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
             
             # 3. Slippage Real (Impacto de Mercado)
             # Calculamos o impacto para o tamanho da nossa mão (capital / 2)
@@ -170,14 +165,14 @@ class CashAndCarryBot:
             
             # Slippage da Perna Spot (Compra)
             symbol_spot = symbol.split(':')[0] # Normalização simples, ou use a lógica do main
-            slippage_spot = self._calculate_market_impact(symbol_spot, trade_size_usd, side='buy', future=False)
+            slippage_spot = self._calculate_market_impact(symbol_spot, trade_size_usd, side='buy', swap=False)
             # Slippage da Perna Futura (Venda/Short)
-            slippage_future = self._calculate_market_impact(symbol, trade_size_usd, side='sell', future=True)
+            slippage_swap = self._calculate_market_impact(symbol, trade_size_usd, side='sell', swap=True)
 
             total_custo_spot = (real_fee_spot * 2) + (slippage_spot * 2)
-            total_custo_future = (real_fee_future * 2) + (slippage_future * 2)
+            total_custo_swap = (real_fee_swap * 2) + (slippage_swap * 2)
             
-            total_fees_real = total_custo_spot + total_custo_future
+            total_fees_real = total_custo_spot + total_custo_swap
 
             projected_24h_return = funding_rate * 3 
 
@@ -185,7 +180,7 @@ class CashAndCarryBot:
                 return False, funding_rate, "LOW_PROFIT_VS_FEES"
 
             # 3. Verificação de Basis (Usando os preços recebidos)
-            basis_percent = (price_future - price_spot) / price_spot
+            basis_percent = (price_swap - price_spot) / price_spot
 
             if basis_percent < NEGATIVE_FUNDING_THRESHOLD: 
                 return False, funding_rate, f"BACKWARDATION ({basis_percent:.4%})"
@@ -205,7 +200,7 @@ class CashAndCarryBot:
             now = current_time if current_time else time.time()
 
             # 1. Perna Spot
-            ticker_spot = self.exchange_future.fetch_ticker(symbol)
+            ticker_spot = self.exchange_swap.fetch_ticker(symbol)
             price_spot_raw = ticker_spot['last']
             entry_price_long = price_spot_raw * (1 + SLIPPAGE_SIMULATED)
 
@@ -219,24 +214,24 @@ class CashAndCarryBot:
                 time.sleep(lag_seconds)
             
             # 3. Perna Futura
-            ticker_future = self.exchange_future.fetch_ticker(symbol)
-            price_future_raw = ticker_future['last']
-            entry_price_short = price_future_raw * (1 - SLIPPAGE_SIMULATED)
+            ticker_swap = self.exchange_swap.fetch_ticker(symbol)
+            price_swap_raw = ticker_swap['last']
+            entry_price_short = price_swap_raw * (1 - SLIPPAGE_SIMULATED)
 
             # Cálculo de Taxas
             cost_spot = (quantity * entry_price_long) * FEE_TAKER
-            cost_future = (quantity * entry_price_short) * FEE_TAKER
-            total_entry_fee = cost_spot + cost_future
+            cost_swap = (quantity * entry_price_short) * FEE_TAKER
+            total_entry_fee = cost_spot + cost_swap
 
             # Configuração do Funding Timestamp
-            funding_info = self.exchange_future.fetch_funding_rate(symbol)
+            funding_info = self.exchange_swap.fetch_funding_rate(symbol)
             self.next_funding_timestamp = funding_info['nextFundingTimestamp'] / 1000
             
             self.position = {
                 'symbol': symbol,
                 'size': quantity,
                 'entry_price_spot': entry_price_long,
-                'entry_price_future': entry_price_short,
+                'entry_price_swap': entry_price_short,
                 'current_funding_rate': funding_rate,
                 'entry_time': now
             }
@@ -259,18 +254,18 @@ class CashAndCarryBot:
         
         try:
             # 1. Busca dados do Futuro (Necessário para PnL e Monitoramento)
-            ticker_future = self.exchange_future.fetch_ticker(symbol)
-            price_future = ticker_future['last']
+            ticker_swap = self.exchange_swap.fetch_ticker(symbol)
+            price_swap = ticker_swap['last']
             
             # --- Lógica de Funding (Inalterada) ---
-            funding_info = self.exchange_future.fetch_funding_rate(symbol)
+            funding_info = self.exchange_swap.fetch_funding_rate(symbol)
             current_funding = funding_info['fundingRate']
             
             api_next_funding_ts = funding_info.get('nextFundingTimestamp')
             api_next_funding_sec = api_next_funding_ts / 1000 if api_next_funding_ts else None
 
             if self.next_funding_timestamp and now >= self.next_funding_timestamp:
-                funding_payout = (self.position['size'] * price_future) * current_funding
+                funding_payout = (self.position['size'] * price_swap) * current_funding
                 self.accumulated_profit += funding_payout
                 
                 if current_time:
@@ -283,14 +278,14 @@ class CashAndCarryBot:
             # --- Circuit Breaker (Inalterado) ---
             if current_funding < NEGATIVE_FUNDING_THRESHOLD:
                 LOGGER.warning(f"SAIDA FORÇADA: Funding negativo crítico ({current_funding:.4%})")
-                self._close_position(price_future, reason="Negative Funding")
+                self._close_position(price_swap, reason="Negative Funding")
                 return
 
             # --- Cálculo de PnL Flutuante ---
             # Nota: Para visualização precisa, usamos o preço de entrada vs preço atual
-            spot_pnl = (price_future - self.position['entry_price_spot']) * self.position['size'] # Estimativa usando preço futuro como proxy se spot não for baixado
-            future_pnl = (self.position['entry_price_future'] - price_future) * self.position['size']
-            net_pnl_price = spot_pnl + future_pnl
+            spot_pnl = (price_swap - self.position['entry_price_spot']) * self.position['size'] # Estimativa usando preço futuro como proxy se spot não for baixado
+            swap_pnl = (self.position['entry_price_swap'] - price_swap) * self.position['size']
+            net_pnl_price = spot_pnl + swap_pnl
             
             total_equity = self.capital + self.accumulated_profit + net_pnl_price
             
@@ -305,18 +300,18 @@ class CashAndCarryBot:
                 try:
                     # Busca preço Spot para calcular Basis exato
                     symbol_spot = symbol.split(':')[0]
-                    ticker_spot = self.exchange_future.fetch_ticker(symbol_spot)
+                    ticker_spot = self.exchange_swap.fetch_ticker(symbol_spot)
                     price_spot = ticker_spot['last']
                     
                     # Chama o processamento passando AMBOS os preços
-                    self._process_compounding(price_spot, price_future)
+                    self._process_compounding(price_spot, price_swap)
                 except Exception as e:
                     LOGGER.warning(f"Falha ao buscar Spot para reinvestimento: {e}")
 
             # --- Logging ---
             log_data = {
                 'symbol': symbol,
-                'price_future': price_future,
+                'price_swap': price_swap,
                 'funding_rate': current_funding,
                 'next_funding_time': "SIMULATED" if current_time else datetime.fromtimestamp(self.next_funding_timestamp).strftime('%Y-%m-%d %H:%M:%S'),
                 'position_size': self.position['size'],
@@ -346,9 +341,9 @@ class CashAndCarryBot:
         # Spot: (Preço Saída - Preço Entrada) * Qtd
         pnl_spot = (exit_price_long - self.position['entry_price_spot']) * self.position['size']
         # Futuro Short: (Preço Entrada - Preço Saída) * Qtd
-        pnl_future = (self.position['entry_price_future'] - exit_price_short) * self.position['size']
+        pnl_swap = (self.position['entry_price_swap'] - exit_price_short) * self.position['size']
         
-        net_price_pnl = pnl_spot + pnl_future
+        net_price_pnl = pnl_spot + pnl_swap
 
         # 2. Cálculo das Taxas de Saída
         position_value = self.position['size'] * current_price
@@ -374,13 +369,13 @@ class CashAndCarryBot:
         self.pending_deposit_usd += usd_amount
         LOGGER.info(f"Aporte: R${MONTHLY_CONTRIBUTION_BRL:.2f} (Tx: {rate_to_use:.2f}) -> ${usd_amount:.2f}")
 
-    def _process_compounding(self, price_spot, price_future):
+    def _process_compounding(self, price_spot, price_swap):
         """
         Aumenta a posição se houver saldo pendente, MAS APENAS SE
         o Basis (Spread) atual for favorável (positivo).
         """
         # 1. Filtro de Qualidade: Verifica o Basis atual
-        current_basis = (price_future - price_spot) / price_spot
+        current_basis = (price_swap - price_spot) / price_spot
         
         # Se o mercado estiver em "Backwardation" (Futuro < Spot) ou spread muito baixo,
         # NÃO reinvestimos agora. Melhor esperar o spread abrir para garantir lucro.
@@ -392,7 +387,7 @@ class CashAndCarryBot:
         if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
             # 2. Novos Preços de Entrada (com Slippage)
             new_entry_spot = price_spot * (1 + SLIPPAGE_SIMULATED)
-            new_entry_future = price_future * (1 - SLIPPAGE_SIMULATED)
+            new_entry_swap = price_swap * (1 - SLIPPAGE_SIMULATED)
 
             # 3. Nova Quantidade
             allocation_per_leg = self.pending_deposit_usd / 2
@@ -401,18 +396,18 @@ class CashAndCarryBot:
             # 4. Dados Antigos
             old_qty = self.position['size']
             old_price_spot = self.position['entry_price_spot']
-            old_price_future = self.position['entry_price_future']
+            old_price_swap = self.position['entry_price_swap']
             
             total_new_qty = old_qty + new_qty
 
             # 5. Cálculo Preço Médio Ponderado (Weighted Average)
             avg_price_spot = ((old_price_spot * old_qty) + (new_entry_spot * new_qty)) / total_new_qty
-            avg_price_future = ((old_price_future * old_qty) + (new_entry_future * new_qty)) / total_new_qty
+            avg_price_swap = ((old_price_swap * old_qty) + (new_entry_swap * new_qty)) / total_new_qty
 
             # 6. Atualização
             self.position['size'] = total_new_qty
             self.position['entry_price_spot'] = avg_price_spot
-            self.position['entry_price_future'] = avg_price_future
+            self.position['entry_price_swap'] = avg_price_swap
             
             # Contabilidade
             # Adiciona o aporte ao capital total (Equity)
@@ -427,7 +422,7 @@ class CashAndCarryBot:
             
             LOGGER.info(f"REINVESTIMENTO REALIZADO: +{new_qty:.4f} moedas. Basis: {current_basis:.4%}. Novo PM Spot: ${avg_price_spot:.2f}")
 
-    def _get_real_fee_rate(self, symbol, future=False):
+    def _get_real_fee_rate(self, symbol, swap=False):
         """
         Busca a taxa de Taker real da conta para o par.
         Retorna o valor decimal (ex: 0.0004 para 0.04%).
@@ -439,8 +434,8 @@ class CashAndCarryBot:
 
             # Busca taxas de trading da conta
             # Nota: Requer permissões de leitura na API Key
-            if future:
-                fees = self.exchange_future.fetch_trading_fees()
+            if swap:
+                fees = self.exchange_swap.fetch_trading_fees()
             else:
                 fees = self.exchange_spot.fetch_trading_fees()
             
@@ -455,7 +450,7 @@ class CashAndCarryBot:
             return FEE_TAKER
 
     # [NOVO] Cálculo de Slippage baseado no Order Book
-    def _calculate_market_impact(self, symbol, usd_amount, side='buy', future=False):
+    def _calculate_market_impact(self, symbol, usd_amount, side='buy', swap=False):
         """
         Calcula o Slippage real simulando uma ordem a mercado no Order Book atual.
         
@@ -468,8 +463,8 @@ class CashAndCarryBot:
             # Busca as 50 melhores ofertas do livro
             limit = 50
 
-            if future:
-                order_book = self.exchange_future.fetch_order_book(symbol, limit=limit)
+            if swap:
+                order_book = self.exchange_swap.fetch_order_book(symbol, limit=limit)
             else:
                 order_book = self.exchange_spot.fetch_order_book(symbol, limit=limit)
             
