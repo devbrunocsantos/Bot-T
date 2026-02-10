@@ -3,14 +3,29 @@ import os
 import random
 import ccxt
 import time
+import urllib3
 from datetime import datetime
 from configs.config import *
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 class CashAndCarryBot:
     def __init__(self, initial_capital_usd):
+        proxies = None
+        if os.environ.get('HTTP_PROXY'):
+            proxies = {
+                'http': os.environ.get('HTTP_PROXY'),
+                'https': os.environ.get('HTTPS_PROXY')
+            }
+
         self.exchange = getattr(ccxt, EXCHANGE_ID)({
             'enableRateLimit': True,
-            'options': {'defaultType': 'future'} # Default para dados de futuros
+            'options': {'defaultType': 'future'}, # Default para dados de futuros
+            # [NOVO] Força o uso do proxy definido nas variáveis de ambiente
+            'proxies': proxies, 
+            # [NOVO] Desativa a verificação SSL. Essencial para proxies corporativos/internos
+            # que interceptam tráfego HTTPS, evitando erros de certificado.
+            'verify': False 
         })
 
         self.state_file = os.path.join("configs", "bot_state.json")
@@ -77,34 +92,84 @@ class CashAndCarryBot:
 
     def get_top_volume_pairs(self):
         """
-        Recupera os pares com maior volume nas últimas 24h.
-        Retorna:
-            list: Lista de símbolos (ex: 'BTC/USDT').
+        [ALTERADO] Escaneia o mercado usando Filtro Dinâmico de Consistência
+        em vez de Whitelist fixa.
         """
         try:
-            LOGGER.info(f"Escaneando mercado por volume (Min: ${MIN_24H_VOLUME_USD:,.0f})...")
+            LOGGER.info("Iniciando varredura dinâmica de mercado...")
             tickers = self.exchange.fetch_tickers()
             
-            # Filtra apenas o que está na Whitelist E tem volume mínimo
-            valid_tickers = [
-                t for t in tickers.values() 
-                if t['symbol'] in WHITELIST_SYMBOLS 
-                and t.get('quoteVolume', 0) >= MIN_24H_VOLUME_USD
-            ]
+            # 1. Filtro Inicial: Volume Mínimo e Quote USDT
+            # Expandimos o universo para qualquer par que tenha volume decente
+            candidates = []
             
-            # Ordena por volume decrescente para priorizar os ativos mais líquidos
-            sorted_tickers = sorted(
-                valid_tickers, key=lambda x: x['quoteVolume'], reverse=True
-            )
+            for symbol, data in tickers.items():
+                # Filtra apenas perpétuos USDT
+                if '/USDT:USDT' in symbol and data['quoteVolume'] >= MIN_24H_VOLUME_USD:
+                    candidates.append(symbol)
             
-            symbols = [t['symbol'] for t in sorted_tickers]
+            LOGGER.info(f"Pré-filtro de volume: {len(candidates)} pares encontrados.")
+            
+            # 2. Filtro de Consistência de Funding (O Pulo do Gato)
+            valid_pairs = []
+            
+            # Limitamos a analisar os top 20 por volume para não estourar API rate limit
+            # Ordena por volume decrescente
+            top_candidates = sorted(
+                candidates, 
+                key=lambda x: tickers[x]['quoteVolume'], 
+                reverse=True
+            )[:20]
 
-            LOGGER.info(f"Filtro completo. {len(symbols)} ativos encontrados com volume suficiente.")
-            return symbols
+            for symbol in top_candidates:
+                if self._analyze_funding_consistency(symbol):
+                    valid_pairs.append(symbol)
+                    LOGGER.info(f"[APROVADO] filtro de consistência: {symbol}")
             
+            return valid_pairs
+
         except Exception as e:
-            LOGGER.error(f"Erro no scanner de mercado: {e}")
+            LOGGER.error(f"Erro no scanner: {e}")
             return []
+
+    def _analyze_funding_consistency(self, symbol):
+        """
+        [NOVO] Analisa se o histórico de funding é consistente e seguro.
+        Regra: Média positiva nos últimos 3 dias e sem picos negativos graves.
+        """
+        try:
+            # Busca histórico das últimas ~100 taxas (mas só usaremos as recentes)
+            # Nota: Nem todas exchanges suportam histórico longo, mas Binance suporta bem.
+            history = self.exchange.fetch_funding_rate_history(symbol, limit=20)
+            
+            if not history or len(history) < 9:
+                return False # Dados insuficientes
+            
+            # Pega os últimos 9 pagamentos (aprox. 3 dias se for 8h/8h)
+            recent_rates = [entry['fundingRate'] for entry in history[-9:]]
+            
+            # Critério 1: Média deve ser atrativa (> 0.01% por período)
+            avg_rate = sum(recent_rates) / len(recent_rates)
+            if avg_rate < 0.0001: 
+                return False
+
+            # Critério 2: Consistência (Nenhum negativo nos últimos 3 dias)
+            # Isso evita moedas que oscilam demais
+            if any(r < 0 for r in recent_rates):
+                return False
+                
+            # Critério 3: Evitar "Armadilhas de Pump" (Opcional)
+            # Se o último funding for 5x maior que a média, pode ser um pump artificial prestes a cair.
+            current_rate = recent_rates[-1]
+            if current_rate > (avg_rate * 5) and current_rate > 0.01:
+                LOGGER.warning(f"Ignorado {symbol}: Pico suspeito de funding (Pump Risk).")
+                return False
+
+            return True
+
+        except Exception as e:
+            # Alguns pares podem dar erro ao buscar histórico
+            return False
 
     def check_entry_opportunity(self, symbol):
         """
@@ -237,7 +302,7 @@ class CashAndCarryBot:
                 
                 self.accumulated_profit += funding_payout
                 
-                LOGGER.info(f"💰 FUNDING RECEBIDO: {symbol} | Valor: ${funding_payout:.4f} | Taxa: {current_funding:.4%}")
+                LOGGER.info(f"FUNDING RECEBIDO: {symbol} | Valor: ${funding_payout:.4f} | Taxa: {current_funding:.4%}")
                 
                 # Atualiza o agendamento para o próximo ciclo (evita receber 2x no mesmo ms)
                 # Usamos o dado fresco da API que já deve estar apontando para o futuro
