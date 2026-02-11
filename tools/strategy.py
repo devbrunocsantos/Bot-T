@@ -2,7 +2,6 @@ import json
 import os
 import ccxt
 import time
-import urllib3
 import concurrent.futures
 from datetime import datetime
 from configs.config import *
