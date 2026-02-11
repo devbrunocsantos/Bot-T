@@ -150,18 +150,14 @@ def main():
                                     
                                     base_spot = s_symbol.split('/')[0] # ex: 'POWR'
 
-                                    # [NOVO] MARCADOR 1: Similaridade de Texto (Levenshtein)
-                                    # Compara 'PEPE' (swap limpo) com 'PEPE' (spot) -> 1.0 (100%)
-                                    # Compara 'POWER' (swap) com 'POWR' (spot) -> 0.88 (88%)
-                                    # Compara 'USDC' com 'USDT' -> 0.75 (75%)
+                                    # Similaridade de Texto (Levenshtein)
                                     similarity = SequenceMatcher(None, base_swap_clean, base_spot).ratio()
                                     
                                     # Só consideramos candidatos com alta similaridade textual (>80%)
                                     if similarity < 0.80:
                                         continue
 
-                                    # [NOVO] MARCADOR 2: Validação de Preço (O "Tira-Teima")
-                                    # Se o texto é parecido, o preço TEM que ser quase idêntico.
+                                    # Validação de Preço (O "Tira-Teima")
                                     price_swap = tickers_swap[pair]['last']
                                     price_spot = s_data['last']
                                     price_diff = abs(price_swap - price_spot) / price_spot

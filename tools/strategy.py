@@ -39,14 +39,15 @@ class CashAndCarryBot:
 
         # Inicialização de variáveis de estado
         if not self._load_state():
-            start_capital = self.auto_balance_wallets()
+            current_real_balance = self.auto_balance_wallets()
 
-            self.capital = start_capital
+            self.capital = current_real_balance
             self.position = None 
             self.accumulated_profit = 0.0
             self.accumulated_fees = 0.0
             self.fee_cache = {}
-            self.peak_capital = start_capital
+            self.peak_capital = current_real_balance
+            self.last_real_balance = current_real_balance
             self.pending_deposit_usd = 0.0
             self.next_funding_timestamp = None
             self.last_usd_brl = BRL_USD_RATE
@@ -65,6 +66,7 @@ class CashAndCarryBot:
                 'accumulated_fees': self.accumulated_fees,
                 'fee_cache': self.fee_cache,
                 'peak_capital': self.peak_capital,
+                'last_real_balance': self.last_real_balance,
                 'pending_deposit_usd': self.pending_deposit_usd,
                 'next_funding_timestamp': self.next_funding_timestamp,
                 'last_usd_brl': self.last_usd_brl
@@ -89,6 +91,7 @@ class CashAndCarryBot:
             self.accumulated_fees = state.get('accumulated_fees', 0.0)
             self.fee_cache = state.get('fee_cache', {})
             self.peak_capital = state.get('peak_capital', 0.0)
+            self.last_real_balance = state.get('last_real_balance', 0.0)
             self.pending_deposit_usd = state.get('pending_deposit_usd', 0.0)
             self.next_funding_timestamp = state.get('next_funding_timestamp')
             self.last_usd_brl = state.get('last_usd_brl', BRL_USD_RATE)
@@ -462,8 +465,7 @@ class CashAndCarryBot:
             drawdown = (self.peak_capital - total_equity) / self.peak_capital if self.peak_capital > 0 else 0
 
             # --- Lógica de Reinvestimento Condicional ---
-            if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
-                self._process_compounding(symbol, spot_symbol, price_spot, price_swap)
+            self._process_compounding(symbol, spot_symbol, price_spot, price_swap)
 
             # --- Logging ---
             log_data = {
@@ -634,7 +636,7 @@ class CashAndCarryBot:
 
     def _process_compounding(self, symbol, spot_symbol, price_spot, price_swap):
         """
-        Aumenta a posição se houver saldo pendente, com dedução antecipada de taxas (Ponto D).
+        Aumenta a posição se houver saldo pendente, com dedução antecipada de taxas.
         """
         try:
             # Busca o Funding Rate atualizado antes de gastar taxas
@@ -846,6 +848,7 @@ class CashAndCarryBot:
         """
         Verifica os saldos reais na Binance e equilibra 50/50 
         entre Spot e Futuros (USDT-M).
+        Detecta se houve DEPÓSITO NOVO na conta e atualiza pending_deposit_usd.
         
         Args:
             threshold_usd: Mínimo de diferença para justificar uma transferência (evita mover centavos).
@@ -862,13 +865,22 @@ class CashAndCarryBot:
             bal_swap_raw = self.exchange_swap.fetch_balance()
             free_swap = bal_swap_raw.get('USDT', {}).get('free', 0.0)
 
-            total_capital = free_spot + free_swap
+            current_total_real = free_spot + free_swap
+
+            balance_diff = current_total_real - self.last_real_balance
+
+            if balance_diff > 1.0:
+                    LOGGER.info(f"APORTE DETECTADO! O saldo real aumentou em ${balance_diff:.2f}")
+                    self.pending_deposit_usd += balance_diff
+                    self._save_state()
+
+            self.last_real_balance = current_total_real
             
-            if total_capital < 10: # Se tiver menos de 10 dólares, nem tenta
-                LOGGER.warning(f"Capital total muito baixo para balancear: ${total_capital:.2f}")
+            if current_total_real < 10: # Se tiver menos de 10 dólares, nem tenta
+                LOGGER.warning(f"Capital total muito baixo para balancear: ${current_total_real:.2f}")
                 return
 
-            target_per_wallet = total_capital / 2
+            target_per_wallet = current_total_real / 2
             
             # Diferença: Quanto o Spot tem a mais (ou a menos) que o alvo
             diff = free_spot - target_per_wallet
@@ -895,7 +907,7 @@ class CashAndCarryBot:
             else:
                 LOGGER.info(f"Carteiras equilibradas. Spot: ${free_spot:.2f} | Fut: ${free_swap:.2f}")
 
-            return total_capital
+            return current_total_real
 
         except Exception as e:
             LOGGER.error(f"Erro crítico ao tentar balancear carteiras: {e}")
