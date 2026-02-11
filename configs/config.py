@@ -1,6 +1,17 @@
 import os
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# --- Credenciais de API ---
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_SECRET_KEY")
+
+# Validação básica de segurança
+if not API_KEY or not API_SECRET:
+    logging.warning("Credenciais de API não encontradas no arquivo .env. O bot rodará em modo restrito/simulado.")
 
 # --- Configuração de Diretórios ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

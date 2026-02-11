@@ -18,13 +18,22 @@ class CashAndCarryBot:
         """
         self.state_file = os.path.join("configs", "bot_state.json")
 
-        self.exchange_swap = getattr(ccxt, EXCHANGE_ID)({
+        # Dicionário base de configuração
+        exchange_config = {
+            'apiKey': API_KEY,
+            'secret': API_SECRET,
             'enableRateLimit': True,
+        }
+
+        # Inicializa cliente de Futuros (Swap)
+        self.exchange_swap = getattr(ccxt, EXCHANGE_ID)({
+            **exchange_config,  # Desempacota as credenciais
             'options': {'defaultType': 'swap'},
         })
 
+        # Inicializa cliente Spot (À vista)
         self.exchange_spot = getattr(ccxt, EXCHANGE_ID)({
-            'enableRateLimit': True,
+            **exchange_config,  # Desempacota as credenciais
             'options': {'defaultType': 'spot'}
         })
 
