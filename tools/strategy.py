@@ -1,6 +1,5 @@
 import json
 import os
-import random
 import ccxt
 import time
 from datetime import datetime
@@ -43,6 +42,7 @@ class CashAndCarryBot:
             self.position = None 
             self.accumulated_profit = 0.0
             self.accumulated_fees = 0.0
+            self.fee_cache = {}
             self.peak_capital = initial_capital_usd
             self.pending_deposit_usd = 0.0
             self.next_funding_timestamp = None
@@ -60,6 +60,7 @@ class CashAndCarryBot:
                 'position': self.position,
                 'accumulated_profit': self.accumulated_profit,
                 'accumulated_fees': self.accumulated_fees,
+                'fee_cache': self.fee_cache,
                 'peak_capital': self.peak_capital,
                 'pending_deposit_usd': self.pending_deposit_usd,
                 'next_funding_timestamp': self.next_funding_timestamp,
@@ -83,6 +84,7 @@ class CashAndCarryBot:
             self.position = state.get('position')
             self.accumulated_profit = state.get('accumulated_profit', 0.0)
             self.accumulated_fees = state.get('accumulated_fees', 0.0)
+            self.fee_cache = state.get('fee_cache', {})
             self.peak_capital = state.get('peak_capital', 0.0)
             self.pending_deposit_usd = state.get('pending_deposit_usd', 0.0)
             self.next_funding_timestamp = state.get('next_funding_timestamp')
@@ -157,7 +159,7 @@ class CashAndCarryBot:
         except: 
             return False
 
-    def check_entry_opportunity(self, symbol, found_spot, price_spot, price_swap, funding_rate):
+    def check_entry_opportunity(self, symbol, spot_symbol, price_spot, price_swap, funding_rate):
         """
         Avalia viabilidade de entrada.
         Args:
@@ -166,23 +168,16 @@ class CashAndCarryBot:
             funding_rate (float): Taxa de funding atual.
         """
         try:
-            now = time.time()
-
-            # 1. Filtro de Cooldown
-            if hasattr(self, 'cooldowns') and symbol in self.cooldowns:
-                if now < self.cooldowns[symbol]:
-                    return False, 0.0, "COOLDOWN_ACTIVE"
-            
-            # 2. Taxas
-            real_fee_spot = self._get_real_fee_rate(found_spot, swap=False)
+            # 1. Taxas
+            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
             real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
             
-            # 3. Slippage Real (Impacto de Mercado)
+            # 2. Slippage Real (Impacto de Mercado)
             # Calculamos o impacto para o tamanho da nossa mão (capital / 2)
             trade_size_usd = self.capital / 2
             
             # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(found_spot, trade_size_usd, side='buy', swap=False)
+            slippage_spot = self._calculate_market_impact(spot_symbol, trade_size_usd, side='buy', swap=False)
             # Slippage da Perna Futura (Venda/Short)
             slippage_swap = self._calculate_market_impact(symbol, trade_size_usd, side='sell', swap=True)
 
@@ -208,7 +203,7 @@ class CashAndCarryBot:
             LOGGER.error(f"Erro ao verificar oportunidade para {symbol}: {e}")
             return False, 0.0, f"ERROR"
 
-    def simulate_entry(self, symbol, found_spot, funding_rate):
+    def simulate_entry(self, symbol, spot_symbol, funding_rate):
         """
         Executa entrada simulada com 'Lag' de execução e Slippage.
         """
@@ -223,7 +218,7 @@ class CashAndCarryBot:
             trade_size_usd = self.capital / 2
 
             # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(found_spot, trade_size_usd, side='buy', swap=False)
+            slippage_spot = self._calculate_market_impact(spot_symbol, trade_size_usd, side='buy', swap=False)
             # Slippage da Perna Futura (Venda/Short)
             slippage_swap = self._calculate_market_impact(symbol, trade_size_usd, side='sell', swap=True)
 
@@ -238,7 +233,7 @@ class CashAndCarryBot:
             entry_price_short = price_swap_raw * (1 - slippage_swap)
 
             # Cálculo de Taxas
-            real_fee_spot = self._get_real_fee_rate(found_spot, swap=False)
+            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
             real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
 
             cost_spot = (quantity * entry_price_long) * real_fee_spot
@@ -252,6 +247,7 @@ class CashAndCarryBot:
             
             self.position = {
                 'symbol': symbol,
+                'spot_symbol': spot_symbol,
                 'size': quantity,
                 'entry_price_spot': entry_price_long,
                 'entry_price_swap': entry_price_short,
@@ -269,11 +265,12 @@ class CashAndCarryBot:
             LOGGER.error(f"Erro entry: {e}")
             return False
 
-    def monitor_and_manage(self, db_manager, found_spot):
+    def monitor_and_manage(self, db_manager):
         if not self.position: return
 
         now = time.time()
         symbol = self.position['symbol']
+        spot_symbol = self.position['spot_symbol']
         
         try:
             # 1. Busca dados do Futuro (Necessário para PnL e Monitoramento)
@@ -282,7 +279,7 @@ class CashAndCarryBot:
 
             try:
                 # Tenta buscar o preço real do ativo no mercado à vista
-                ticker_spot = self.exchange_spot.fetch_ticker(found_spot)
+                ticker_spot = self.exchange_spot.fetch_ticker(spot_symbol)
                 price_spot = ticker_spot['last']
             except Exception as e:
                 # Em caso de falha na API Spot, mantém o fallback e loga aviso
@@ -306,7 +303,7 @@ class CashAndCarryBot:
             # --- Circuit Breaker ---
             if current_funding < NEGATIVE_FUNDING_THRESHOLD:
                 LOGGER.warning(f"SAIDA FORÇADA: Funding negativo crítico ({current_funding:.4%})")
-                self._close_position(price_swap, symbol, found_spot, reason="Negative Funding")
+                self._close_position(price_swap, symbol, spot_symbol, reason="Negative Funding")
                 return
 
             # --- Cálculo de PnL Flutuante ---
@@ -323,7 +320,7 @@ class CashAndCarryBot:
 
             # --- Lógica de Reinvestimento Condicional ---
             if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
-                self._process_compounding(symbol, found_spot, price_spot, price_swap)
+                self._process_compounding(symbol, spot_symbol, price_spot, price_swap)
 
             # --- Logging ---
             log_data = {
@@ -346,7 +343,7 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.error(f"Monitor error: {e}")
 
-    def _close_position(self, current_price_swap, symbol, found_spot, reason):
+    def _close_position(self, current_price_swap, symbol, spot_symbol, reason):
         """
         Encerra a posição e contabiliza PnL REALIZADO + Custos.
         """
@@ -354,7 +351,7 @@ class CashAndCarryBot:
             qty = self.position['size']
 
             try:
-                ticker_spot = self.exchange_spot.fetch_ticker(found_spot)
+                ticker_spot = self.exchange_spot.fetch_ticker(spot_symbol)
                 current_price_spot = ticker_spot['last']
             except Exception as e:
                 LOGGER.warning(f"Erro ao buscar Spot na saída: {e}. Usando proxy.")
@@ -364,14 +361,14 @@ class CashAndCarryBot:
             position_value_usd = qty * current_price_swap
 
             # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(found_spot, position_value_usd, side='buy', swap=False)
+            slippage_spot = self._calculate_market_impact(spot_symbol, position_value_usd, side='buy', swap=False)
             # Slippage da Perna Futura (Venda/Short)
             slippage_swap = self._calculate_market_impact(symbol, position_value_usd, side='sell', swap=True)
 
             exit_price_long = current_price_spot * (1 - slippage_spot)
             exit_price_short = current_price_swap * (1 + slippage_swap)
 
-            real_fee_spot = self._get_real_fee_rate(found_spot, swap=False)
+            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
             real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
             
             # 1. Cálculo do PnL do Preço (Capital Gains/Losses)
@@ -411,27 +408,40 @@ class CashAndCarryBot:
         self.pending_deposit_usd += usd_amount
         LOGGER.info(f"Aporte: R${MONTHLY_CONTRIBUTION_BRL:.2f} (Tx: {rate_to_use:.2f}) -> ${usd_amount:.2f}")
 
-    def _process_compounding(self, symbol, found_spot, price_spot, price_swap):
+    def _process_compounding(self, symbol, spot_symbol, price_spot, price_swap):
         """
         Aumenta a posição se houver saldo pendente, MAS APENAS SE
-        o Basis (Spread) atual for favorável (positivo).
+        o Basis (Spread) E o Funding Rate atual forem favoráveis.
         """
-        # 1. Filtro de Qualidade: Verifica o Basis atual
-        current_basis = (price_swap - price_spot) / price_spot
-        
-        # Se o mercado estiver em "Backwardation" (Futuro < Spot) ou spread muito baixo,
-        # NÃO reinvestimos agora. Melhor esperar o spread abrir para garantir lucro.
-        if current_basis < 0.0001: # Ex: 0.01% mínimo
-            LOGGER.info(f"Reinvestimento adiado. Basis ruim: {current_basis:.4%}")
+        try:
+            # [ALTERAÇÃO 1] Busca o Funding Rate atualizado antes de gastar taxas
+            funding_info = self.exchange_swap.fetch_funding_rate(symbol)
+            current_funding = funding_info['fundingRate']
+        except Exception as e:
+            LOGGER.warning(f"Reinvestimento abortado: Falha ao checar funding atual ({e})")
             return
 
-        # Se passou no filtro, executa o aumento de posição
+        # [ALTERAÇÃO 2] Validação de Basis (Spread de Preço)
+        current_basis = (price_swap - price_spot) / price_spot
+        
+        # Se o spread estiver comprimido (< 0.05%), não vale a pena pagar taxas de Taker
+        if current_basis < 0.0005: 
+            LOGGER.info(f"Reinvestimento adiado. Basis comprimido: {current_basis:.4%}")
+            return
+
+        # [ALTERAÇÃO 3] Validação de Rentabilidade (A Correção do Risco)
+        # Impede aumentar a mão se o funding caiu abaixo do mínimo aceitável
+        if current_funding < MIN_FUNDING_RATE:
+            LOGGER.info(f"Reinvestimento adiado. Funding baixo: {current_funding:.4%}")
+            return
+
+        # Se passou nos filtros, executa o aumento de posição
         if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
             # 1. Nova Quantidade
             allocation_per_leg = self.pending_deposit_usd / 2
 
             # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(found_spot, allocation_per_leg, side='buy', swap=False)
+            slippage_spot = self._calculate_market_impact(spot_symbol, allocation_per_leg, side='buy', swap=False)
             # Slippage da Perna Futura (Venda/Short)
             slippage_swap = self._calculate_market_impact(symbol, allocation_per_leg, side='sell', swap=True)
 
@@ -442,7 +452,7 @@ class CashAndCarryBot:
             new_qty = allocation_per_leg / new_entry_spot
 
             # 3. Cálculo das Taxas Reais
-            real_fee_spot = self._get_real_fee_rate(found_spot, swap=False)
+            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
             real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
 
             cost_spot = (new_qty * new_entry_spot) * real_fee_spot
@@ -476,7 +486,7 @@ class CashAndCarryBot:
             
             self.pending_deposit_usd = 0.0
             
-            LOGGER.info(f"REINVESTIMENTO REALIZADO: +{new_qty:.4f} moedas. Basis: {current_basis:.4%}. Novo PM Spot: ${avg_price_spot:.2f}")
+            LOGGER.info(f"REINVESTIMENTO REALIZADO: +{new_qty:.4f} moedas. Funding: {current_funding:.4%}. Novo PM Spot: ${avg_price_spot:.2f}")
 
     def _get_real_fee_rate(self, symbol, swap=False):
         """
@@ -509,8 +519,7 @@ class CashAndCarryBot:
                 # Fallback genérico da resposta da API
                 taker_fee = fees.get('USDT', {}).get('taker', default_fee)
 
-            # Salva no cache (inicialize self.fee_cache = {} no __init__)
-            if not hasattr(self, 'fee_cache'): self.fee_cache = {}
+            # Salva no cache
             self.fee_cache[cache_key] = taker_fee
             
             return taker_fee

@@ -103,11 +103,7 @@ def main():
                             all_tickers = {**tickers_swap, **tickers_spot}
                             
                             # 4. Busca Funding Rates
-                            try:
-                                all_funding = bot.exchange_swap.fetch_funding_rates()
-                            except Exception as fr_error:
-                                LOGGER.warning(f"Fetch funding em lote falhou: {fr_error}. Usará fallback individual.")
-                                all_funding = {}
+                            all_funding = bot.exchange_swap.fetch_funding_rates()
                                 
                         except Exception as e:
                             LOGGER.error(f"Erro crítico ao baixar dados em lote: {e}")
@@ -127,6 +123,10 @@ def main():
                     
                     for pair in top_pairs:
                         try:
+                            # Se não temos dados de funding para este par, ignoramos
+                            if pair not in all_funding:
+                                continue
+
                             # 1. Definições Iniciais
                             # pair futura ex: 'POWER/USDT:USDT'
                             symbol_spot_candidate = pair.split(':')[0] 
@@ -166,9 +166,9 @@ def main():
 
                                     # [NOVO] MARCADOR 2: Validação de Preço (O "Tira-Teima")
                                     # Se o texto é parecido, o preço TEM que ser quase idêntico.
-                                    price_fut = tickers_swap[pair]['last']
-                                    price_spt = s_data['last']
-                                    price_diff = abs(price_fut - price_spt) / price_spt
+                                    price_swap = tickers_swap[pair]['last']
+                                    price_spot = s_data['last']
+                                    price_diff = abs(price_swap - price_spot) / price_spot
                                     
                                     # Se a diferença for maior que 1.5%, rejeita (evita tokens v1/v2 ou scams)
                                     if price_diff > 0.015:
@@ -193,11 +193,7 @@ def main():
                             price_spot = all_tickers[found_spot]['last']
 
                             # Obtém Funding Rate
-                            if pair in all_funding:
-                                fr_rate = all_funding[pair]['fundingRate']
-                            else:
-                                fr_data = bot.exchange_swap.fetch_funding_rate(pair)
-                                fr_rate = fr_data['fundingRate']
+                            fr_rate = all_funding[pair]['fundingRate']
 
                             # Passa os dados já processados
                             is_viable, fr, reason = bot.check_entry_opportunity(
@@ -219,7 +215,7 @@ def main():
 
                         if is_viable:
                             # Executa entrada (ainda faz fetch interno para precisão de ordem)
-                            success = bot.simulate_entry(pair, fr)
+                            success = bot.simulate_entry(pair, found_spot, fr)
                             if success:
                                 break 
                         else:
@@ -240,7 +236,7 @@ def main():
                     last_scan_time = current_time
             else:
                 # Se tem posição, monitora
-                bot.monitor_and_manage(db_manager, found_spot)
+                bot.monitor_and_manage(db_manager)
 
             # Aguarda próximo ciclo
             time.sleep(60) 
