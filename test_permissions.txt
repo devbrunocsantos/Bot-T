@@ -1,0 +1,100 @@
+import ccxt
+import os
+import urllib3
+from configs.config import API_KEY, API_SECRET
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def test_binance_permissions():
+    """
+    Realiza um diagnóstico completo das permissões da API Key,
+    especificamente focado em contas Portfolio Margin/Unified.
+    """
+    print("--- INICIANDO DIAGNÓSTICO DE PERMISSÕES (BINANCE) ---\n")
+
+    # 1. Configuração do Cliente
+    # Em Portfolio Margin, o endpoint de futuros (fapi) geralmente responde 
+    # pelas operações de derivativos, mesmo com saldo unificado.
+
+    proxies = None
+        # Verifica se existem proxies configurados nas variáveis de ambiente (pelo utils.py)
+    if os.environ.get('HTTP_PROXY'):
+        proxies = {
+            'http': os.environ.get('HTTP_PROXY'),
+            'https': os.environ.get('HTTPS_PROXY')
+        }
+    exchange = ccxt.binance({
+        'apiKey': API_KEY,
+        'secret': API_SECRET,
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'swap',  # Força conexão com a API de Futuros
+            'portfolioMargin': True   # Flag para otimizar leitura de saldo em PM
+        },
+        'proxies': proxies, 
+            'verify': False  # Crucial para ambientes corporativos que interceptam SSL
+    })
+
+    # --- TESTE 1: CONECTIVIDADE E LEITURA (READ) ---
+    print("[1/3] Testando Leitura de Saldo...")
+    try:
+        # Tenta buscar o saldo. Em contas PM, a estrutura do JSON é diferente.
+        # O CCXT tenta padronizar, mas erros aqui indicam bloqueio de IP ou Key inválida.
+        balance = exchange.fetch_balance()
+        
+        # Tenta identificar o saldo em USDT (Unified)
+        usdt_free = balance.get('USDT', {}).get('free', 0.0)
+        print(f"   SUCESSO: Leitura permitida. Saldo Livre USDT: {usdt_free}")
+        
+    except Exception as e:
+        print(f"   FALHA CRÍTICA NA LEITURA: {e}")
+        print("   -> Verifique se o IP no site 'meuip.com.br' bate com a Whitelist da API.")
+        return # Aborta se não consegue nem ler
+
+    # --- TESTE 2: TIPO DE CONTA ---
+    print("\n[2/3] Verificando Tipo de Conta...")
+    try:
+        # Busca informações da conta para confirmar se o Portfolio Margin está ativo
+        account_info = exchange.fapiprivatev2_get_account()
+        is_unified = account_info.get('multiAssetsMargin') # Geralmente true em PM/Unified
+        
+        print(f"   Info da Conta: {account_info.get('canTrade', 'Unknown')}")
+        print(f"   Multi-Assets/Unified: {is_unified}")
+        
+        if not account_info.get('canTrade'):
+            print("   ALERTA: A flag 'canTrade' retornou False. A conta pode estar suspensa ou em manutenção.")
+    except Exception as e:
+        print(f"   Erro ao buscar detalhes da conta: {e}")
+
+    # --- TESTE 3: PERMISSÃO DE TRADING (WRITE) ---
+    # Este é o teste definitivo. Envia uma ordem com flag 'test=True'.
+    # A Binance processa a validação de segurança mas NÃO executa a ordem.
+    print("\n[3/3] Testando Permissão de Execução (Futures)...")
+    try:
+        symbol_check = 'BTC/USDT'
+        print(f"   Enviando ordem de teste (DRY RUN) em {symbol_check}...")
+        
+        order = exchange.create_order(
+            symbol=symbol_check,
+            type='market',
+            side='buy',
+            amount=0.002, # Quantidade mínima segura
+            params={'test': True} # <--- O PULO DO GATO: Isso impede a execução real
+        )
+        print("   SUCESSO: A API aceitou a ordem de teste.")
+        print("   CONCLUSÃO: A permissão 'Enable Futures' está ATIVA implicitamente.")
+        
+    except Exception as e:
+        err_msg = str(e)
+        if "API key does not have permission" in err_msg:
+            print("   FALHA: A API retornou erro de permissão.")
+            print("   -> Causa Provável: A opção 'Enable Spot & Margin Trading' não propagou corretamente para Futuros.")
+        elif "IP not authorized" in err_msg:
+             print("   FALHA: Erro de IP na execução da ordem.")
+        else:
+            print(f"   FALHA GENÉRICA DE EXECUÇÃO: {e}")
+
+    print("\n--- DIAGNÓSTICO FINALIZADO ---")
+
+if __name__ == "__main__":
+    test_binance_permissions()

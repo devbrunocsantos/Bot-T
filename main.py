@@ -18,7 +18,7 @@ proxy_porta = 8080
 
 configurar_ambiente_proxy(proxy_host=proxy_host, proxy_porta=proxy_porta, proxy_user=proxy_user, proxy_pass=proxy_pass)
 
-def get_live_usd_brl():
+def get_live_usd_brl(bot_instance):
     """
     Busca a cotação atual do Dólar Comercial (USD-BRL) via API pública.
     Retorna o valor 'bid' (compra). Em caso de erro, retorna o fixo do config.
@@ -29,7 +29,11 @@ def get_live_usd_brl():
         data = response.json()
         rate = float(data['USDBRL']['bid'])
         LOGGER.info(f"Cotação USD/BRL obtida: R$ {rate:.4f}")
+
+        bot_instance.update_brl_rate(rate)
+
         return rate
+    
     except Exception as e:
         LOGGER.error(f"Falha ao obter cotação real: {e}. Usando fallback: {BRL_USD_RATE}")
         return BRL_USD_RATE
@@ -61,6 +65,7 @@ def main():
     try:
         while True:
             current_time = time.time()
+            current_rate = get_live_usd_brl(bot)
 
             # Verificação de Rotação de Mês
             new_month = datetime.now().strftime('%m-%Y')
@@ -76,7 +81,7 @@ def main():
 
             # 1. Simulação de Aporte Mensal
             if current_time - last_deposit_check > deposit_interval:
-                current_rate = get_live_usd_brl()
+                current_rate = get_live_usd_brl(bot)
                 bot.deposit_monthly_contribution(exchange_rate=current_rate)
                 last_deposit_check = current_time
 
@@ -86,17 +91,17 @@ def main():
                 if current_time - last_scan_time > scan_interval:
                     top_pairs = bot.get_top_volume_pairs()
 
-                    # --- [CORREÇÃO CRÍTICA] Batch Fetching Híbrido (Spot + Futures) ---
+                    # --- Batch Fetching Híbrido (Spot + Swaps) ---
                     all_tickers = {}
                     all_funding = {}
                     
                     if top_pairs:
                         try:
-                            LOGGER.info("Baixando dados de mercado (Spot + Futures) e Funding...")
+                            LOGGER.info("Baixando dados de mercado (Spot + Swaps) e Funding...")
                             
                             # 1. Busca Tickers de Futuros (onde operamos)
                             # Retorna chaves como 'BTC/USDT:USDT'
-                            tickers_futures = bot.exchange_future.fetch_tickers()
+                            tickers_swap = bot.exchange_swap.fetch_tickers()
                             
                             # 2. Busca Tickers de Spot (para calcular o preço base)
                             # Retorna chaves como 'BTC/USDT'
@@ -105,14 +110,10 @@ def main():
                             
                             # 3. Funde os dicionários
                             # Isso garante que teremos tanto a chave 'BTC/USDT' quanto 'BTC/USDT:USDT'
-                            all_tickers = {**tickers_futures, **tickers_spot}
+                            all_tickers = {**tickers_swap, **tickers_spot}
                             
                             # 4. Busca Funding Rates
-                            try:
-                                all_funding = bot.exchange_future.fetch_funding_rates()
-                            except Exception as fr_error:
-                                LOGGER.warning(f"Fetch funding em lote falhou: {fr_error}. Usará fallback individual.")
-                                all_funding = {}
+                            all_funding = bot.exchange_swap.fetch_funding_rates()
                                 
                         except Exception as e:
                             LOGGER.error(f"Erro crítico ao baixar dados em lote: {e}")
@@ -132,13 +133,17 @@ def main():
                     
                     for pair in top_pairs:
                         try:
+                            # Se não temos dados de funding para este par, ignoramos
+                            if pair not in all_funding:
+                                continue
+
                             # 1. Definições Iniciais
                             # pair futura ex: 'POWER/USDT:USDT'
                             symbol_spot_candidate = pair.split(':')[0] 
-                            base_future_raw = pair.split('/')[0] # 'POWER'
+                            base_swap_raw = pair.split('/')[0] # 'POWER'
                             
                             # Limpeza inteligente de prefixos numéricos (1000PEPE -> PEPE)
-                            base_future_clean = re.sub(r"^\d+", "", base_future_raw)
+                            base_swap_clean = re.sub(r"^\d+", "", base_swap_raw)
 
                             found_spot = None
                             
@@ -160,10 +165,10 @@ def main():
                                     base_spot = s_symbol.split('/')[0] # ex: 'POWR'
 
                                     # [NOVO] MARCADOR 1: Similaridade de Texto (Levenshtein)
-                                    # Compara 'PEPE' (future limpo) com 'PEPE' (spot) -> 1.0 (100%)
-                                    # Compara 'POWER' (future) com 'POWR' (spot) -> 0.88 (88%)
+                                    # Compara 'PEPE' (swap limpo) com 'PEPE' (spot) -> 1.0 (100%)
+                                    # Compara 'POWER' (swap) com 'POWR' (spot) -> 0.88 (88%)
                                     # Compara 'USDC' com 'USDT' -> 0.75 (75%)
-                                    similarity = SequenceMatcher(None, base_future_clean, base_spot).ratio()
+                                    similarity = SequenceMatcher(None, base_swap_clean, base_spot).ratio()
                                     
                                     # Só consideramos candidatos com alta similaridade textual (>80%)
                                     if similarity < 0.80:
@@ -171,9 +176,9 @@ def main():
 
                                     # [NOVO] MARCADOR 2: Validação de Preço (O "Tira-Teima")
                                     # Se o texto é parecido, o preço TEM que ser quase idêntico.
-                                    price_fut = tickers_futures[pair]['last']
-                                    price_spt = s_data['last']
-                                    price_diff = abs(price_fut - price_spt) / price_spt
+                                    price_swap = tickers_swap[pair]['last']
+                                    price_spot = s_data['last']
+                                    price_diff = abs(price_swap - price_spot) / price_spot
                                     
                                     # Se a diferença for maior que 1.5%, rejeita (evita tokens v1/v2 ou scams)
                                     if price_diff > 0.015:
@@ -191,24 +196,20 @@ def main():
 
                             # --- Verificações Finais ---
                             if not found_spot:
-                                reasons.append(f"MISSING_SPOT_DATA ({base_future_clean})")
+                                reasons.append(f"MISSING_SPOT_DATA ({base_swap_clean})")
                                 continue
 
-                            price_future = all_tickers[pair]['last']
+                            price_swap = all_tickers[pair]['last']
                             price_spot = all_tickers[found_spot]['last']
 
                             # Obtém Funding Rate
-                            if pair in all_funding:
-                                fr_rate = all_funding[pair]['fundingRate']
-                            else:
-                                fr_data = bot.exchange_future.fetch_funding_rate(pair)
-                                fr_rate = fr_data['fundingRate']
+                            fr_rate = all_funding[pair]['fundingRate']
 
                             # Passa os dados já processados
                             is_viable, fr, reason = bot.check_entry_opportunity(
-                                pair, 
+                                pair, found_spot,
                                 price_spot=price_spot, 
-                                price_future=price_future, 
+                                price_swap=price_swap, 
                                 funding_rate=fr_rate
                             )
                         except Exception as e:
@@ -224,7 +225,7 @@ def main():
 
                         if is_viable:
                             # Executa entrada (ainda faz fetch interno para precisão de ordem)
-                            success = bot.simulate_entry(pair, fr)
+                            success = bot.simulate_entry(pair, found_spot, fr)
                             if success:
                                 break 
                         else:
