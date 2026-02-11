@@ -238,6 +238,7 @@ def main():
                         'reason': final_reason
                     })
 
+                    LOGGER.info("Fim da varredura dinâmica de mercado.")
                     last_scan_time = current_time
             else:
                 # Se tem posição, monitora
