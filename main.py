@@ -86,6 +86,12 @@ def main():
 
             # 2. Lógica de Mercado
             if bot.position is None:
+                # Executa o balanceamento automático antes de operar
+                try:
+                    bot.auto_balance_wallets() 
+                except Exception as e:
+                    LOGGER.error(f"Falha no auto-balanceamento: {e}")
+
                 # Se não tem posição, escaneia
                 if current_time - last_scan_time > scan_interval:
                     top_pairs = bot.get_top_volume_pairs()

@@ -662,3 +662,60 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.warning(f"Erro ao calcular slippage real para {symbol}: {e}")
             return SLIPPAGE_SIMULATED
+        
+    def auto_balance_wallets(self, threshold_usd=5.0):
+        """
+        Verifica os saldos reais na Binance e equilibra 50/50 
+        entre Spot e Futuros (USDT-M).
+        
+        Args:
+            threshold_usd: Mínimo de diferença para justificar uma transferência (evita mover centavos).
+        """
+        try:
+            LOGGER.info("Verificando balanceamento de carteiras...")
+
+            # 1. Busca Saldo Livre Real (Free Balance)
+            # Spot
+            bal_spot_raw = self.exchange_spot.fetch_balance()
+            free_spot = bal_spot_raw.get('USDT', {}).get('free', 0.0)
+
+            # Futuros
+            bal_swap_raw = self.exchange_swap.fetch_balance()
+            free_swap = bal_swap_raw.get('USDT', {}).get('free', 0.0)
+
+            total_capital = free_spot + free_swap
+            
+            if total_capital < 10: # Se tiver menos de 10 dólares, nem tenta
+                LOGGER.warning(f"Capital total muito baixo para balancear: ${total_capital:.2f}")
+                return
+
+            target_per_wallet = total_capital / 2
+            
+            # Diferença: Quanto o Spot tem a mais (ou a menos) que o alvo
+            diff = free_spot - target_per_wallet
+
+            # 2. Lógica de Transferência
+            # Se diff for POSITIVO (> threshold), Spot tem demais -> Manda para Futuros
+            if diff > threshold_usd:
+                amount_to_transfer = diff
+                LOGGER.info(f"Desbalanceado! Spot tem excesso. Transferindo ${amount_to_transfer:.2f} para Futuros...")
+                
+                # Comando CCXT para transferência: code, amount, from_account, to_account
+                self.exchange_spot.transfer('USDT', amount_to_transfer, 'spot', 'future')
+                LOGGER.info("Transferência Spot -> Futuros realizada com sucesso.")
+
+            # Se diff for NEGATIVO (< -threshold), Spot tem de menos (Futuros tem demais) -> Manda para Spot
+            elif diff < -threshold_usd:
+                amount_to_transfer = abs(diff)
+                LOGGER.info(f"Desbalanceado! Futuros tem excesso. Transferindo ${amount_to_transfer:.2f} para Spot...")
+                
+                # Note que a origem agora é 'future' e destino 'spot'
+                self.exchange_spot.transfer('USDT', amount_to_transfer, 'future', 'spot')
+                LOGGER.info("Transferência Futuros -> Spot realizada com sucesso.")
+
+            else:
+                LOGGER.info(f"Carteiras equilibradas. Spot: ${free_spot:.2f} | Fut: ${free_swap:.2f}")
+
+        except Exception as e:
+            LOGGER.error(f"Erro crítico ao tentar balancear carteiras: {e}")
+            LOGGER.error("Verifique se a API Key tem permissão 'Enable Universal Transfer'.")
