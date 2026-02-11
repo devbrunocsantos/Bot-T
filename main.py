@@ -37,7 +37,7 @@ def main():
     
     # Variáveis de controle de tempo
     last_scan_time = 0
-    scan_interval = 300 # 1 hora
+    scan_interval = 3600 # 1 hora
     last_deposit_check = time.time()
     deposit_interval = 2592000 # 30 dias (Simulação simplificada)
 
@@ -81,7 +81,7 @@ def main():
                 if current_time - last_scan_time > scan_interval:
                     top_pairs = bot.get_top_volume_pairs()
 
-                    # --- [CORREÇÃO CRÍTICA] Batch Fetching Híbrido (Spot + Swaps) ---
+                    # --- Batch Fetching Híbrido (Spot + Swaps) ---
                     all_tickers = {}
                     all_funding = {}
                     
