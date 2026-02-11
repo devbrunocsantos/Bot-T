@@ -1,3 +1,5 @@
+.env
+*.json
 *.pyc
 *.db
 *.log
