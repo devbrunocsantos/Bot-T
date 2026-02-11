@@ -9,7 +9,7 @@ from configs.config import LOGGER, BRL_USD_RATE
 from tools.database import DataManager
 from tools.strategy import CashAndCarryBot
 
-def get_live_usd_brl():
+def get_live_usd_brl(bot_instance):
     """
     Busca a cotação atual do Dólar Comercial (USD-BRL) via API pública.
     Retorna o valor 'bid' (compra). Em caso de erro, retorna o fixo do config.
@@ -20,7 +20,11 @@ def get_live_usd_brl():
         data = response.json()
         rate = float(data['USDBRL']['bid'])
         LOGGER.info(f"Cotação USD/BRL obtida: R$ {rate:.4f}")
+
+        bot_instance.update_brl_rate(rate)
+
         return rate
+    
     except Exception as e:
         LOGGER.error(f"Falha ao obter cotação real: {e}. Usando fallback: {BRL_USD_RATE}")
         return BRL_USD_RATE
@@ -33,7 +37,7 @@ def main():
     
     # Variáveis de controle de tempo
     last_scan_time = 0
-    scan_interval = 3600 # 1 hora
+    scan_interval = 300 # 1 hora
     last_deposit_check = time.time()
     deposit_interval = 2592000 # 30 dias (Simulação simplificada)
 
@@ -67,7 +71,7 @@ def main():
 
             # 1. Simulação de Aporte Mensal
             if current_time - last_deposit_check > deposit_interval:
-                current_rate = get_live_usd_brl()
+                current_rate = get_live_usd_brl(bot)
                 bot.deposit_monthly_contribution(exchange_rate=current_rate)
                 last_deposit_check = current_time
 
@@ -197,7 +201,7 @@ def main():
 
                             # Passa os dados já processados
                             is_viable, fr, reason = bot.check_entry_opportunity(
-                                pair, 
+                                pair, found_spot,
                                 price_spot=price_spot, 
                                 price_swap=price_swap, 
                                 funding_rate=fr_rate
@@ -236,7 +240,7 @@ def main():
                     last_scan_time = current_time
             else:
                 # Se tem posição, monitora
-                bot.monitor_and_manage(db_manager)
+                bot.monitor_and_manage(db_manager, found_spot)
 
             # Aguarda próximo ciclo
             time.sleep(60) 
