@@ -1,9 +1,9 @@
 import json
 import os
-import random
 import ccxt
 import time
 import urllib3
+import concurrent.futures
 from datetime import datetime
 from configs.config import *
 
@@ -240,6 +240,116 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.error(f"Erro ao verificar oportunidade para {symbol}: {e}")
             return False, 0.0, f"ERROR"
+        
+    def execute_real_entry(self, symbol, spot_symbol, allocation_usd):
+        """
+        Executa entrada simultânea (Spot + Swap) com proteção de Rollback.
+        Usa Threading para disparar as ordens no mesmo milissegundo.
+        """
+        LOGGER.info(f"--- INICIANDO EXECUÇÃO REAL: {symbol} ---")
+        
+        # 1. Preparação de Dados e Preços
+        try:
+            # Baixa preços atualizados para calcular limites
+            ticker_spot = self.exchange_spot.fetch_ticker(spot_symbol)
+            ticker_swap = self.exchange_swap.fetch_ticker(symbol)
+            
+            price_spot = ticker_spot['last']
+            price_swap = ticker_swap['last']
+            
+            # Tolerância de Slippage (0.5%)
+            limit_buy_price = price_spot * 1.005
+            limit_sell_price = price_swap * 0.995
+            
+            # Calcula quantidades baseadas no capital alocado
+            # Qtd = (Capital / 2) / Preço
+            raw_amount = (allocation_usd / 2) / price_spot
+            
+            # [CRÍTICO] Ajusta precisão para evitar erro "PRECISION" da Binance
+            # Ex: Transforma 0.12345678 BTC em 0.12345 se a exchange só aceitar 5 casas
+            amount_spot = self.exchange_spot.amount_to_precision(spot_symbol, raw_amount)
+            amount_swap = self.exchange_swap.amount_to_precision(symbol, raw_amount)
+            
+            # Formata preços para precisão da exchange
+            price_spot_fmt = self.exchange_spot.price_to_precision(spot_symbol, limit_buy_price)
+            price_swap_fmt = self.exchange_swap.price_to_precision(symbol, limit_sell_price)
+
+            LOGGER.info(f"Tentativa: Comprar {amount_spot} {spot_symbol} @ {price_spot_fmt} | Short {amount_swap} {symbol} @ {price_swap_fmt}")
+
+        except Exception as e:
+            LOGGER.error(f"Erro na preparação da ordem real: {e}")
+            return False
+
+        # 2. Execução Paralela (Disparo Simultâneo)
+        # Usamos ThreadPool para não travar o código esperando uma resposta antes de enviar a outra
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            
+            # Prepara as "balas"
+            future_spot = executor.submit(
+                self._place_limit_ioc_order, 
+                self.exchange_spot, 
+                spot_symbol, 
+                'buy', 
+                amount_spot, 
+                price_spot_fmt
+            )
+            
+            future_swap = executor.submit(
+                self._place_limit_ioc_order, 
+                self.exchange_swap, 
+                symbol, 
+                'sell', 
+                amount_swap, 
+                price_swap_fmt
+            )
+            
+            # Espera os resultados
+            order_spot = future_spot.result()
+            order_swap = future_swap.result()
+
+        # 3. Verificação de Sucesso e Lógica de Rollback
+        spot_ok = order_spot is not None and order_spot['status'] in ['filled', 'closed']
+        swap_ok = order_swap is not None and order_swap['status'] in ['filled', 'closed']
+        
+        # CENÁRIO A: SUCESSO TOTAL
+        if spot_ok and swap_ok:
+            LOGGER.info(f"SUCESSO TOTAL! Ordens executadas. Spot ID: {order_spot['id']} | Swap ID: {order_swap['id']}")
+            
+            # Atualiza estado interno do bot com dados reais da exchange
+            self.position = {
+                'symbol': symbol,
+                'spot_symbol': spot_symbol,
+                'size': float(order_swap['filled']), # Usa o que foi realmente preenchido
+                'entry_price_spot': float(order_spot['average']),
+                'entry_price_swap': float(order_swap['average']),
+                'entry_time': time.time()
+            }
+            self._save_state()
+            return True
+
+        # CENÁRIO B: FALHA PARCIAL (PERIGO!) -> ROLLBACK
+        else:
+            LOGGER.critical("FALHA NA EXECUÇÃO SIMULTÂNEA! Iniciando Protocolo de Rollback...")
+            
+            # Se comprou Spot mas falhou no Futuro -> Vende o Spot a mercado
+            if spot_ok and not swap_ok:
+                LOGGER.warning("Rollback: Vendendo Spot comprado incorretamente...")
+                try:
+                    self.exchange_spot.create_market_sell_order(spot_symbol, order_spot['filled'])
+                    LOGGER.info("Rollback Spot concluído.")
+                except Exception as e:
+                    LOGGER.critical(f"FALHA GRAVE NO ROLLBACK SPOT: {e}")
+
+            # Se vendeu Futuro mas falhou no Spot -> Fecha o Futuro a mercado
+            elif swap_ok and not spot_ok:
+                LOGGER.warning("Rollback: Fechando Short aberto incorretamente...")
+                try:
+                    self.exchange_swap.create_market_buy_order(symbol, order_swap['filled'])
+                    LOGGER.info("Rollback Swap concluído.")
+                except Exception as e:
+                    LOGGER.critical(f"FALHA GRAVE NO ROLLBACK SWAP: {e}")
+            
+            return False
 
     def simulate_entry(self, symbol, spot_symbol, funding_rate):
         """
