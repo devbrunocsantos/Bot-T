@@ -7,9 +7,6 @@ import concurrent.futures
 from datetime import datetime
 from configs.config import *
 
-# Desativa avisos de segurança para conexões via Proxy Corporativo (SSL Verify False)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 class CashAndCarryBot:
     def __init__(self):
         """
@@ -22,14 +19,6 @@ class CashAndCarryBot:
         """
         self.state_file = os.path.join("configs", "bot_state.json")
 
-        proxies = None
-        # Verifica se existem proxies configurados nas variáveis de ambiente (pelo utils.py)
-        if os.environ.get('HTTP_PROXY'):
-            proxies = {
-                'http': os.environ.get('HTTP_PROXY'),
-                'https': os.environ.get('HTTPS_PROXY')
-            }
-
         # Dicionário base de configuração
         exchange_config = {
             'apiKey': API_KEY,
@@ -37,19 +26,17 @@ class CashAndCarryBot:
             'enableRateLimit': True,
         }
 
+        # Inicializa cliente de Futuros (Swap)
         self.exchange_swap = getattr(ccxt, EXCHANGE_ID)({
             **exchange_config,  # Desempacota as credenciais
-            'options': {'defaultType': 'swap'},
-            'proxies': proxies, 
-            'verify': False  # Crucial para ambientes corporativos que interceptam SSL
+            'options': {'defaultType': 'swap'}
         })
 
+        # Inicializa cliente Spot (À vista)
         self.exchange_spot = getattr(ccxt, EXCHANGE_ID)({
-                **exchange_config,  # Desempacota as credenciais
-                'options': {'defaultType': 'spot'},
-                'proxies': proxies, 
-                'verify': False 
-            })
+            **exchange_config,  # Desempacota as credenciais
+            'options': {'defaultType': 'spot'}
+        })
 
         # Inicialização de variáveis de estado
         if not self._load_state():
