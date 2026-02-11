@@ -500,6 +500,96 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.error(f"Monitor error: {e}")
 
+    def execute_real_close(self, symbol, spot_symbol, quantity, reason="SIGNAL"):
+        """
+        Encerra a posição (Vende Spot + Compra Futuro) simultaneamente.
+        Usa 'Limit IOC' com slippage generoso para garantir a saída, 
+        mas força 'Market' se algo der errado.
+        """
+        LOGGER.info(f"--- INICIANDO FECHAMENTO REAL: {symbol} (Motivo: {reason}) ---")
+        
+        try:
+            # 1. Preparação de Dados
+            ticker_spot = self.exchange_spot.fetch_ticker(spot_symbol)
+            ticker_swap = self.exchange_swap.fetch_ticker(symbol)
+            
+            price_spot = ticker_spot['last']
+            price_swap = ticker_swap['last']
+            
+            # Tolerância de Slippage na SAÍDA (0.5%)
+            # Spot: Quero VENDER, aceito até 0.5% abaixo do preço
+            limit_sell_spot = price_spot * 0.995
+            
+            # Swap: Quero COMPRAR (Fechar Short), aceito pagar até 0.5% acima
+            limit_buy_swap = price_swap * 1.005
+            
+            # Ajuste de precisão (Quantidade)
+            qty_spot = self.exchange_spot.amount_to_precision(spot_symbol, quantity)
+            qty_swap = self.exchange_swap.amount_to_precision(symbol, quantity)
+            
+            # Ajuste de precisão (Preço)
+            price_spot_fmt = self.exchange_spot.price_to_precision(spot_symbol, limit_sell_spot)
+            price_swap_fmt = self.exchange_swap.price_to_precision(symbol, limit_buy_swap)
+
+            LOGGER.info(f"Fechando: Vender Spot {qty_spot} @ {price_spot_fmt} | Comprar Swap {qty_swap} @ {price_swap_fmt}")
+
+            # 2. Execução Paralela
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Dispara Venda do Spot
+                future_spot = executor.submit(
+                    self._place_limit_ioc_order, 
+                    self.exchange_spot, spot_symbol, 'sell', qty_spot, price_spot_fmt
+                )
+                
+                # Dispara Compra do Swap (Fechar Short)
+                future_swap = executor.submit(
+                    self._place_limit_ioc_order, 
+                    self.exchange_swap, symbol, 'buy', qty_swap, price_swap_fmt
+                )
+                
+                order_spot = future_spot.result()
+                order_swap = future_swap.result()
+
+            # 3. Verificação e "Force Close" (Limpeza de Erros)
+            spot_done = order_spot is not None and order_spot['status'] in ['filled', 'closed']
+            swap_done = order_swap is not None and order_swap['status'] in ['filled', 'closed']
+
+            # CASO PERFEITO: Ambos saíram
+            if spot_done and swap_done:
+                LOGGER.info("POSIÇÃO ENCERRADA COM SUCESSO NO MODO REAL.")
+                self.position = None
+                self._save_state()
+                return True
+
+            # CASO DE ERRO: Uma perna ficou presa? Força saída a Mercado!
+            else:
+                LOGGER.critical("ERRO NO FECHAMENTO SIMULTÂNEO! Iniciando Saída de Emergência (Market Order)...")
+                
+                # Se Spot não vendeu, vende a mercado agora
+                if not spot_done:
+                    try:
+                        LOGGER.warning("Forçando Venda de Spot a Mercado...")
+                        self.exchange_spot.create_market_sell_order(spot_symbol, qty_spot)
+                    except Exception as e:
+                        LOGGER.critical(f"FALHA CRÍTICA AO VENDER SPOT: {e}")
+
+                # Se Swap não fechou, compra a mercado agora
+                if not swap_done:
+                    try:
+                        LOGGER.warning("Forçando Fechamento de Swap a Mercado...")
+                        self.exchange_swap.create_market_buy_order(symbol, qty_swap)
+                    except Exception as e:
+                        LOGGER.critical(f"FALHA CRÍTICA AO FECHAR SWAP: {e}")
+                
+                # Assume que limpou tudo após a emergência
+                self.position = None
+                self._save_state()
+                return True
+
+        except Exception as e:
+            LOGGER.error(f"Erro catastrófico no fechamento real: {e}")
+            return False
+
     def _close_position(self, current_price_swap, symbol, spot_symbol, reason):
         """
         Encerra a posição e contabiliza PnL REALIZADO + Custos.
