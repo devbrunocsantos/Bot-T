@@ -187,21 +187,42 @@ class CashAndCarryBot:
             real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
             real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
             
-            # 2. Slippage Real (Impacto de Mercado)
-            # Calculamos o impacto para o tamanho da nossa mão (capital / 2)
-            trade_size_usd = self.capital / 2
+            # Define margem de segurança para taxas (1.1 = 10% de buffer sobre a taxa)
+            estimated_fee_pct = (real_fee_spot + real_fee_swap) * 1.1
             
+            # Reduz o capital base para garantir que sobra dinheiro para as taxas
+            usable_capital = self.capital / (1 + estimated_fee_pct)
+            
+            allocation_per_leg = usable_capital / 2
+
+            # 2. Slippage Real (Impacto de Mercado)
             # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(spot_symbol, trade_size_usd, side='buy', swap=False)
+            slippage_spot = self._calculate_market_impact(spot_symbol, allocation_per_leg, side='buy', swap=False)
             # Slippage da Perna Futura (Venda/Short)
-            slippage_swap = self._calculate_market_impact(symbol, trade_size_usd, side='sell', swap=True)
+            slippage_swap = self._calculate_market_impact(symbol, allocation_per_leg, side='sell', swap=True)
 
             total_custo_spot = (real_fee_spot * 2) + (slippage_spot * 2)
             total_custo_swap = (real_fee_swap * 2) + (slippage_swap * 2)
             
             total_fees_real = total_custo_spot + total_custo_swap
 
-            projected_24h_return = funding_rate * 3 
+            funding_frequency_daily = 3.0 # Fallback padrão (8h)
+            
+            try:
+                # Carrega dados cacheados do mercado pelo CCXT
+                market = self.exchange_swap.market(symbol)
+                
+                # Verifica se existe informação específica de intervalo (comum na Binance: fundingIntervalHours)
+                if 'info' in market and 'fundingIntervalHours' in market['info']:
+                    interval_hours = int(market['info']['fundingIntervalHours'])
+                    if interval_hours > 0:
+                        funding_frequency_daily = 24 / interval_hours
+            except Exception as e:
+                # Mantém o fallback silenciosamente em caso de erro de lookup, mas loga se necessário
+                LOGGER.debug(f"Não foi possível obter intervalo dinâmico para {symbol}, usando 8h: {e}")
+                pass
+
+            projected_24h_return = funding_rate * funding_frequency_daily
 
             if projected_24h_return < (total_fees_real * 1.2): 
                 return False, funding_rate, "LOW_PROFIT_VS_FEES"
@@ -226,20 +247,29 @@ class CashAndCarryBot:
             # Se current_time for passado (backtest), usa ele. Senão usa o real.
             now = time.time()
 
+            # Busca taxas reais para cálculo preciso
+            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
+            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
+
+            # Define margem de segurança para taxas (1.1 = 10% de buffer sobre a taxa)
+            estimated_fee_pct = (real_fee_spot + real_fee_swap) * 1.1
+            
+            # Reduz o capital base para garantir que sobra dinheiro para as taxas
+            usable_capital = self.capital / (1 + estimated_fee_pct)
+            
+            allocation_per_leg = usable_capital / 2
+
             # 1. Perna Spot
             ticker_spot = self.exchange_swap.fetch_ticker(symbol)
             price_spot_raw = ticker_spot['last']
 
-            trade_size_usd = self.capital / 2
-
             # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(spot_symbol, trade_size_usd, side='buy', swap=False)
+            slippage_spot = self._calculate_market_impact(spot_symbol, allocation_per_leg, side='buy', swap=False)
             # Slippage da Perna Futura (Venda/Short)
-            slippage_swap = self._calculate_market_impact(symbol, trade_size_usd, side='sell', swap=True)
+            slippage_swap = self._calculate_market_impact(symbol, allocation_per_leg, side='sell', swap=True)
 
             entry_price_long = price_spot_raw * (1 + slippage_spot)
 
-            allocation_per_leg = self.capital / 2
             quantity = allocation_per_leg / entry_price_long
             
             # 2. Perna Futura
@@ -425,18 +455,17 @@ class CashAndCarryBot:
 
     def _process_compounding(self, symbol, spot_symbol, price_spot, price_swap):
         """
-        Aumenta a posição se houver saldo pendente, MAS APENAS SE
-        o Basis (Spread) E o Funding Rate atual forem favoráveis.
+        Aumenta a posição se houver saldo pendente, com dedução antecipada de taxas (Ponto D).
         """
         try:
-            # [ALTERAÇÃO 1] Busca o Funding Rate atualizado antes de gastar taxas
+            # Busca o Funding Rate atualizado antes de gastar taxas
             funding_info = self.exchange_swap.fetch_funding_rate(symbol)
             current_funding = funding_info['fundingRate']
         except Exception as e:
             LOGGER.warning(f"Reinvestimento abortado: Falha ao checar funding atual ({e})")
             return
 
-        # [ALTERAÇÃO 2] Validação de Basis (Spread de Preço)
+        # Validação de Basis (Spread de Preço)
         current_basis = (price_swap - price_spot) / price_spot
         
         # Se o spread estiver comprimido (< 0.05%), não vale a pena pagar taxas de Taker
@@ -444,16 +473,25 @@ class CashAndCarryBot:
             LOGGER.info(f"Reinvestimento adiado. Basis comprimido: {current_basis:.4%}")
             return
 
-        # [ALTERAÇÃO 3] Validação de Rentabilidade (A Correção do Risco)
-        # Impede aumentar a mão se o funding caiu abaixo do mínimo aceitável
+        # Validação de Rentabilidade
         if current_funding < MIN_FUNDING_RATE:
             LOGGER.info(f"Reinvestimento adiado. Funding baixo: {current_funding:.4%}")
             return
 
         # Se passou nos filtros, executa o aumento de posição
         if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
-            # 1. Nova Quantidade
-            allocation_per_leg = self.pending_deposit_usd / 2
+            
+            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
+            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
+
+            estimated_fee_pct = (real_fee_spot + real_fee_swap) * 1.1
+            
+            # Fórmula: Valor_Total = Valor_Alocado + (Valor_Alocado * Taxa)
+            # Logo: Valor_Alocado = Valor_Total / (1 + Taxa)
+            usable_capital = self.pending_deposit_usd / (1 + estimated_fee_pct)
+            
+            # 1. Nova Quantidade baseada apenas no capital ÚTIL
+            allocation_per_leg = usable_capital / 2
 
             # Slippage da Perna Spot (Compra)
             slippage_spot = self._calculate_market_impact(spot_symbol, allocation_per_leg, side='buy', swap=False)
@@ -466,10 +504,7 @@ class CashAndCarryBot:
 
             new_qty = allocation_per_leg / new_entry_spot
 
-            # 3. Cálculo das Taxas Reais
-            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
-            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
-
+            # 3. Cálculo das Taxas Reais (sobre o valor operado)
             cost_spot = (new_qty * new_entry_spot) * real_fee_spot
             cost_swap = (new_qty * new_entry_swap) * real_fee_swap
 
@@ -486,22 +521,22 @@ class CashAndCarryBot:
             avg_price_spot = ((old_price_spot * old_qty) + (new_entry_spot * new_qty)) / total_new_qty
             avg_price_swap = ((old_price_swap * old_qty) + (new_entry_swap * new_qty)) / total_new_qty
 
-            # 6. Atualização
+            # 6. Atualização e Contabilidade
             self.position['size'] = total_new_qty
             self.position['entry_price_spot'] = avg_price_spot
             self.position['entry_price_swap'] = avg_price_swap
             
-            # Contabilidade
-            # Adiciona o aporte ao capital total (Equity)
+            # Adiciona o aporte BRUTO ao capital
             self.capital += self.pending_deposit_usd 
             
-            # Desconta as taxas da operação de aumento
+            # Subtrai as taxas pagas
             self.accumulated_fees += reinvest_fees
             self.capital -= reinvest_fees
             
+            # Zera o pendente
             self.pending_deposit_usd = 0.0
             
-            LOGGER.info(f"REINVESTIMENTO REALIZADO: +{new_qty:.4f} moedas. Funding: {current_funding:.4%}. Novo PM Spot: ${avg_price_spot:.2f}")
+            LOGGER.info(f"REINVESTIMENTO REALIZADO: +{new_qty:.4f} moedas. Taxas pagas: ${reinvest_fees:.2f} (Retiradas do aporte)")
 
     def _get_real_fee_rate(self, symbol, swap=False):
         """
@@ -542,8 +577,28 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.warning(f"Erro ao buscar fee real ({symbol}): {e}. Usando default.")
             return FEE_TAKER_SWAP_DEFAULT if swap else FEE_TAKER_SPOT_DEFAULT
+        
+    def _place_limit_ioc_order(self, client, symbol, side, amount, limit_price):
+        """
+        Envia uma ordem LIMIT com TimeInForce = IOC (Immediate-Or-Cancel).
+        Isso simula uma ordem a mercado, mas com proteção de preço (Slippage máximo).
+        """
+        try:
+            # params={'timeInForce': 'IOC'} instrui a Binance a cancelar imediatamente
+            # qualquer parte da ordem que não possa ser preenchida ao preço limite ou melhor.
+            order = client.create_order(
+                symbol=symbol,
+                type='limit',
+                side=side,
+                amount=amount,
+                price=limit_price,
+                params={'timeInForce': 'IOC'} 
+            )
+            return order
+        except Exception as e:
+            LOGGER.error(f"Falha na execução da perna {side} ({symbol}): {e}")
+            return None
 
-    # [NOVO] Cálculo de Slippage baseado no Order Book
     def _calculate_market_impact(self, symbol, usd_amount, side='buy', swap=False):
         """
         Calcula o Slippage real simulando uma ordem a mercado no Order Book atual.
