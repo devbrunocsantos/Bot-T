@@ -48,7 +48,6 @@ FEE_TAKER_SPOT_DEFAULT = 0.001   # 0.10%
 FEE_TAKER_SWAP_DEFAULT = 0.0005  # 0.05%
 SLIPPAGE_SIMULATED = 0.0005     # 0.05% (Conservador para garantir realismo)
 
-# --- Gestão de Simulação ---
+# --- Gestão de Conversões ---
 BRL_USD_RATE = 5.80             # Fallback caso a API de câmbio falhe
-MONTHLY_CONTRIBUTION_BRL = 1000.00
 MIN_ORDER_VALUE_USD = 10.00     # Mínimo para abrir ordem na Binance costuma ser $5-$10

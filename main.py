@@ -42,13 +42,11 @@ def main():
     LOGGER.info("Iniciando Bot Cash & Carry (Modo Simulado)...")
     
     # Inicialização do Bot
-    bot = CashAndCarryBot(initial_capital_usd=1000.0) 
+    bot = CashAndCarryBot() 
     
     # Variáveis de controle de tempo
     last_scan_time = 0
     scan_interval = 3600 # 1 hora
-    last_deposit_check = time.time()
-    deposit_interval = 2592000 # 30 dias (Simulação simplificada)
 
     # Configuração do Banco de Dados
     db_dir = "databases"
@@ -78,22 +76,16 @@ def main():
                 
                 db_manager = DataManager(db_name=db_path)
 
-            # 1. Simulação de Aporte Mensal
-            if current_time - last_deposit_check > deposit_interval:
-                current_rate = get_live_usd_brl(bot)
-                bot.deposit_monthly_contribution(exchange_rate=current_rate)
-                last_deposit_check = current_time
-
-            # 2. Lógica de Mercado
+            # Lógica de Mercado
             if bot.position is None:
-                # Executa o balanceamento automático antes de operar
-                try:
-                    bot.auto_balance_wallets() 
-                except Exception as e:
-                    LOGGER.error(f"Falha no auto-balanceamento: {e}")
-
                 # Se não tem posição, escaneia
                 if current_time - last_scan_time > scan_interval:
+                    # Executa o balanceamento automático antes de operar
+                    try:
+                        bot.auto_balance_wallets()
+                    except Exception as e:
+                        LOGGER.error(f"Falha no auto-balanceamento: {e}")
+
                     top_pairs = bot.get_top_volume_pairs()
 
                     # --- Batch Fetching Híbrido (Spot + Swaps) ---
@@ -109,8 +101,6 @@ def main():
                             tickers_swap = bot.exchange_swap.fetch_tickers()
                             
                             # 2. Busca Tickers de Spot (para calcular o preço base)
-                            # Retorna chaves como 'BTC/USDT'
-                            # NOTA: Requer que bot.exchange_spot tenha sido criado no strategy.py
                             tickers_spot = bot.exchange_spot.fetch_tickers()
                             
                             # 3. Funde os dicionários
@@ -142,7 +132,7 @@ def main():
                             if pair not in all_funding:
                                 continue
 
-                            # 1. Definições Iniciais
+                            # Definições Iniciais
                             # pair futura ex: 'POWER/USDT:USDT'
                             symbol_spot_candidate = pair.split(':')[0] 
                             base_swap_raw = pair.split('/')[0] # 'POWER'
@@ -254,7 +244,7 @@ def main():
                 bot.monitor_and_manage(db_manager)
 
             # Aguarda próximo ciclo
-            time.sleep(60) 
+            time.sleep(300) 
 
     except KeyboardInterrupt:
         LOGGER.info("Parando bot manualmente...")

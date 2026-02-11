@@ -11,7 +11,7 @@ from configs.config import *
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class CashAndCarryBot:
-    def __init__(self, initial_capital_usd):
+    def __init__(self):
         """
         Inicializa o Bot.
         
@@ -53,12 +53,14 @@ class CashAndCarryBot:
 
         # Inicialização de variáveis de estado
         if not self._load_state():
-            self.capital = initial_capital_usd
+            start_capital = self.auto_balance_wallets()
+
+            self.capital = start_capital
             self.position = None 
             self.accumulated_profit = 0.0
             self.accumulated_fees = 0.0
             self.fee_cache = {}
-            self.peak_capital = initial_capital_usd
+            self.peak_capital = start_capital
             self.pending_deposit_usd = 0.0
             self.next_funding_timestamp = None
             self.last_usd_brl = BRL_USD_RATE
@@ -132,7 +134,7 @@ class CashAndCarryBot:
                     candidates.append(symbol)
             
             # Ordena por volume decrescente e pega os Top 20 para análise detalhada
-            top_candidates = sorted(candidates, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:20]
+            top_candidates = sorted(candidates, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
             valid_pairs = []
 
             for symbol in top_candidates:
@@ -444,15 +446,6 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.error(f"Erro crítico ao fechar posição: {e}")
 
-    def deposit_monthly_contribution(self, exchange_rate=None):
-        """
-        Recebe aporte em BRL e converte para USD usando taxa fornecida.
-        """
-        rate_to_use = exchange_rate if exchange_rate else BRL_USD_RATE
-        usd_amount = MONTHLY_CONTRIBUTION_BRL / rate_to_use
-        self.pending_deposit_usd += usd_amount
-        LOGGER.info(f"Aporte: R${MONTHLY_CONTRIBUTION_BRL:.2f} (Tx: {rate_to_use:.2f}) -> ${usd_amount:.2f}")
-
     def _process_compounding(self, symbol, spot_symbol, price_spot, price_swap):
         """
         Aumenta a posição se houver saldo pendente, com dedução antecipada de taxas (Ponto D).
@@ -716,6 +709,9 @@ class CashAndCarryBot:
             else:
                 LOGGER.info(f"Carteiras equilibradas. Spot: ${free_spot:.2f} | Fut: ${free_swap:.2f}")
 
+            return total_capital
+
         except Exception as e:
             LOGGER.error(f"Erro crítico ao tentar balancear carteiras: {e}")
             LOGGER.error("Verifique se a API Key tem permissão 'Enable Universal Transfer'.")
+            return 0.0
