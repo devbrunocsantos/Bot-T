@@ -65,7 +65,6 @@ def main():
     try:
         while True:
             current_time = time.time()
-            current_rate = get_live_usd_brl(bot)
 
             # Verificação de Rotação de Mês
             new_month = datetime.now().strftime('%m-%Y')
