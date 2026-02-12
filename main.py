@@ -71,6 +71,16 @@ def main():
             if bot.position is None:
                 # Se não tem posição, escaneia
                 if current_time - last_scan_time > scan_interval:
+                    try:
+                        bot.auto_balance_wallets()
+                    except Exception as e:
+                        LOGGER.error(f"Falha no auto-balanceamento: {e}")
+
+                    if (bot.capital / 2) < MIN_ORDER_VALUE_USD:
+                        LOGGER.info("CAPITAL INSUFICIENTE! (< $22) Aguradando uma hora para nova tentativa...")
+                        last_scan_time = current_time
+                        continue
+
                     top_pairs = bot.get_top_volume_pairs()
 
                     # --- Batch Fetching Híbrido (Spot + Swaps) ---
@@ -110,15 +120,6 @@ def main():
                     if not top_pairs:
                         LOGGER.warning("Nenhum par encontrado no filtro de volume.")
                         final_reason = "NO_VOLUME"
-
-                    try:
-                        bot.auto_balance_wallets()
-                    except Exception as e:
-                        LOGGER.error(f"Falha no auto-balanceamento: {e}")
-
-                    if (bot.capital / 2) < MIN_ORDER_VALUE_USD:
-                        time.sleep(60)
-                        continue # Pula para o próximo ciclo
                     
                     for pair in top_pairs:
                         try:
