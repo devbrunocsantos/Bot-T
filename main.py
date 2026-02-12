@@ -29,7 +29,7 @@ def get_live_usd_brl(bot_instance):
         return BRL_USD_RATE
 
 def main():
-    LOGGER.info("Iniciando REbot (Cash & Carry)...")
+    LOGGER.info("Iniciando Cash & Carry Bot...")
     
     # Inicialização do Bot
     bot = CashAndCarryBot() 
