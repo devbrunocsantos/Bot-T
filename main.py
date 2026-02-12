@@ -5,7 +5,7 @@ from datetime import datetime
 from collections import Counter
 from difflib import SequenceMatcher
 import requests
-from configs.config import LOGGER, BRL_USD_RATE
+from configs.config import LOGGER, BRL_USD_RATE, MIN_ORDER_VALUE_USD
 from tools.database import DataManager
 from tools.strategy import CashAndCarryBot
 
@@ -67,16 +67,16 @@ def main():
                 
                 db_manager = DataManager(db_name=db_path)
 
+            # Executa o balanceamento automático antes de operar
+            try:
+                bot.auto_balance_wallets()
+            except Exception as e:
+                LOGGER.error(f"Falha no auto-balanceamento: {e}")
+
             # Lógica de Mercado
             if bot.position is None:
                 # Se não tem posição, escaneia
                 if current_time - last_scan_time > scan_interval:
-                    # Executa o balanceamento automático antes de operar
-                    try:
-                        bot.auto_balance_wallets()
-                    except Exception as e:
-                        LOGGER.error(f"Falha no auto-balanceamento: {e}")
-
                     top_pairs = bot.get_top_volume_pairs()
 
                     # --- Batch Fetching Híbrido (Spot + Swaps) ---
@@ -206,10 +206,14 @@ def main():
                         reasons.append(reason)
 
                         if is_viable:
-                            # Executa entrada (ainda faz fetch interno para precisão de ordem)
-                            success = bot.simulate_entry(pair, found_spot, fr)
-                            if success:
-                                break 
+                            if bot.capital > MIN_ORDER_VALUE_USD:
+                                # Executa entrada
+                                success = bot.simulate_entry(pair, found_spot, fr)
+                                if success:
+                                    break
+                            else:
+                                LOGGER.warning(f"Oportunidade em {pair} ignorada: Capital insuficiente (${bot.capital:.2f})")
+                                reasons.append("INSUFFICIENT_CAPITAL")
                         else:
                             if reasons:
                                 final_reason = Counter(reasons).most_common(1)[0][0]
