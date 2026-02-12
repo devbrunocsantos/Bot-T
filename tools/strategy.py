@@ -155,28 +155,27 @@ class CashAndCarryBot:
 
     def _analyze_funding_consistency(self, symbol):
         """
-        Analisa o histórico recente de Funding Rates.
-        Critérios: Média positiva (3 dias) e ausência de taxas negativas.
+        Analisa o histórico.
+        Modo Agressivo: Aceita histórico ruim, desde que a Média seja boa 
+        e o momento ATUAL seja positivo.
         """
         try:
-            # Busca histórico (limit=20 garante margem para pegar os últimos 3 dias/9 periodos)
             history = self.exchange_swap.fetch_funding_rate_history(symbol, limit=20)
             
             if not history or len(history) < 9: 
                 return False
             
-            # Analisa os últimos 9 pagamentos (aprox. 3 dias em ciclos de 8h)
             recent_rates = [entry['fundingRate'] for entry in history[-9:]]
             
-            # Critério 1: Média atrativa (> 0.01% por período)
+            # O lucro dos positivos pagou os negativos e sobrou.
             avg_rate = sum(recent_rates) / len(recent_rates)
             if avg_rate < 0.0001: 
                 return False
 
-            # Critério 2: Consistência (Nenhum negativo)
-            if any(r < 0 for r in recent_rates): 
+            # 2. O momento atual TEM que ser positivo.
+            if recent_rates[-1] < 0:
                 return False
-            
+                        
             return True
         except: 
             return False
