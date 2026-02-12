@@ -477,11 +477,12 @@ class CashAndCarryBot:
             # CASO PERFEITO: Ambos saíram
             if spot_done and swap_done:
                 LOGGER.info("POSIÇÃO ENCERRADA COM SUCESSO NO MODO REAL.")
+                self._clean_spot_dust(spot_symbol)
                 self.position = None
                 self._save_state()
                 return True
 
-            # CASO DE ERRO: Uma perna ficou presa? Força saída a Mercado!
+            # CASO DE ERRO:Força saída a Mercado
             else:
                 LOGGER.critical("ERRO NO FECHAMENTO SIMULTÂNEO! Iniciando Saída de Emergência (Market Order)...")
                 
@@ -837,3 +838,32 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.error(f"Erro crítico ao tentar balancear carteiras: {e}")
             return 0.0
+        
+    def _clean_spot_dust(self, spot_symbol):
+        """
+        Verifica se restou saldo residual (dust) na carteira Spot e tenta vender a mercado.
+        Nota: A ordem só será aceita se o valor da sobra for maior que o mínimo da exchange (ex: > $5 USD na Binance).
+        """
+        try:
+            base_currency = spot_symbol.split('/')[0] # Ex: 'BTC/USDT' -> 'BTC'
+            
+            # Busca saldo atualizado especificamente da moeda base
+            balance_raw = self.exchange_spot.fetch_balance()
+            free_amount = balance_raw.get(base_currency, {}).get('free', 0.0)
+
+            if free_amount <= 0:
+                return
+
+            LOGGER.info(f"Detectada sobra de {free_amount} {base_currency}. Tentando limpar...")
+
+            # Tenta vender tudo o que sobrou a mercado
+            self.exchange_spot.create_market_sell_order(spot_symbol, free_amount)
+            
+            LOGGER.info(f"Limpeza de dust realizada: {free_amount} {base_currency} vendidos.")
+
+        except Exception as e:
+            # Erros de 'Min Notional' (valor muito baixo) são esperados e podem ser ignorados ou logados como aviso leve
+            if "MIN_NOTIONAL" in str(e) or "Filter failure" in str(e):
+                LOGGER.info(f"Sobra muito pequena para vender ({base_currency}). Mantida na carteira.")
+            else:
+                LOGGER.warning(f"Não foi possível limpar a sobra de {spot_symbol}: {e}")
