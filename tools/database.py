@@ -47,7 +47,7 @@ class DataManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     symbol TEXT,
-                    price_future REAL,
+                    price_swap REAL,
                     funding_rate REAL,
                     next_funding_time TEXT,
                     position_size REAL,
@@ -89,12 +89,12 @@ class DataManager:
             cursor = self.conn.cursor()
             cursor.execute('''
                 INSERT INTO position_logs (
-                    symbol, price_future, funding_rate, next_funding_time, 
+                    symbol, price_swap, funding_rate, next_funding_time, 
                     position_size, simulated_fees, accumulated_profit, max_drawdown, action
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 data.get('symbol'),
-                data.get('price_future'),
+                data.get('price_swap'),
                 data.get('funding_rate'),
                 data.get('next_funding_time'),
                 data.get('position_size'),

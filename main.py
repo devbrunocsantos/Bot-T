@@ -3,9 +3,8 @@ import re
 import time
 from datetime import datetime
 from collections import Counter
-from difflib import SequenceMatcher
 import requests
-from configs.config import LOGGER, BRL_USD_RATE
+from configs.config import LOGGER, BRL_USD_RATE, MIN_ORDER_VALUE_USD
 from tools.database import DataManager
 from tools.strategy import CashAndCarryBot
 from utils import configurar_ambiente_proxy
@@ -39,7 +38,7 @@ def get_live_usd_brl(bot_instance):
         return BRL_USD_RATE
 
 def main():
-    LOGGER.info("Iniciando Bot Cash & Carry (Modo Simulado)...")
+    LOGGER.info("Iniciando Cash & Carry Bot...")
     
     # Inicialização do Bot
     bot = CashAndCarryBot() 
@@ -80,11 +79,15 @@ def main():
             if bot.position is None:
                 # Se não tem posição, escaneia
                 if current_time - last_scan_time > scan_interval:
-                    # Executa o balanceamento automático antes de operar
                     try:
                         bot.auto_balance_wallets()
                     except Exception as e:
                         LOGGER.error(f"Falha no auto-balanceamento: {e}")
+
+                    if (bot.capital / 2) < MIN_ORDER_VALUE_USD:
+                        LOGGER.info("CAPITAL INSUFICIENTE! (< $22) Aguradando uma hora para nova tentativa...")
+                        last_scan_time = current_time
+                        continue
 
                     top_pairs = bot.get_top_volume_pairs()
 
@@ -142,53 +145,10 @@ def main():
 
                             found_spot = None
                             
-                            # ESTRATÉGIA A: Busca Direta (A mais segura e rápida)
+                            # Busca Direta
                             if symbol_spot_candidate in tickers_spot:
                                 found_spot = symbol_spot_candidate
                             
-                            # ESTRATÉGIA B: Busca Heurística (Se a direta falhou)
-                            # Só entra aqui se não achou 'POWER/USDT' direto
-                            else:
-                                best_match_score = 0
-                                best_match_symbol = None
-
-                                for s_symbol, s_data in tickers_spot.items():
-                                    # Filtra apenas pares USDT e ignora preços zerados
-                                    if not s_symbol.endswith('/USDT') or s_data['last'] == 0:
-                                        continue
-                                    
-                                    base_spot = s_symbol.split('/')[0] # ex: 'POWR'
-
-                                    # [NOVO] MARCADOR 1: Similaridade de Texto (Levenshtein)
-                                    # Compara 'PEPE' (swap limpo) com 'PEPE' (spot) -> 1.0 (100%)
-                                    # Compara 'POWER' (swap) com 'POWR' (spot) -> 0.88 (88%)
-                                    # Compara 'USDC' com 'USDT' -> 0.75 (75%)
-                                    similarity = SequenceMatcher(None, base_swap_clean, base_spot).ratio()
-                                    
-                                    # Só consideramos candidatos com alta similaridade textual (>80%)
-                                    if similarity < 0.80:
-                                        continue
-
-                                    # [NOVO] MARCADOR 2: Validação de Preço (O "Tira-Teima")
-                                    # Se o texto é parecido, o preço TEM que ser quase idêntico.
-                                    price_swap = tickers_swap[pair]['last']
-                                    price_spot = s_data['last']
-                                    price_diff = abs(price_swap - price_spot) / price_spot
-                                    
-                                    # Se a diferença for maior que 1.5%, rejeita (evita tokens v1/v2 ou scams)
-                                    if price_diff > 0.015:
-                                        continue
-                                    
-                                    # Se passou nos dois testes e é o "melhor" até agora, guarda
-                                    if similarity > best_match_score:
-                                        best_match_score = similarity
-                                        best_match_symbol = s_symbol
-
-                                if best_match_symbol:
-                                    found_spot = best_match_symbol
-                                    # Log de auditoria para você ver a "mágica" acontecendo
-                                    LOGGER.info(f"Link Inteligente: {pair} <-> {found_spot} (Score Texto: {best_match_score:.2f})")
-
                             # --- Verificações Finais ---
                             if not found_spot:
                                 reasons.append(f"MISSING_SPOT_DATA ({base_swap_clean})")
@@ -219,10 +179,10 @@ def main():
                         reasons.append(reason)
 
                         if is_viable:
-                            # Executa entrada (ainda faz fetch interno para precisão de ordem)
-                            success = bot.simulate_entry(pair, found_spot, fr)
+                            # Executa entrada
+                            success = bot.execute_real_entry(pair, found_spot, bot.capital)
                             if success:
-                                break 
+                                break
                         else:
                             if reasons:
                                 final_reason = Counter(reasons).most_common(1)[0][0]
