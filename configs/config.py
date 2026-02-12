@@ -39,15 +39,17 @@ LOGGER = logging.getLogger("DeltaNeutralBot")
 
 # --- Parâmetros de Mercado ---
 EXCHANGE_ID = 'binance'
-MIN_24H_VOLUME_USD = 50_000_000 # Reduzi um pouco para pegar boas oportunidades em mid-caps
+MIN_24H_VOLUME_USD = 50_000_000
 
 # --- Filtros de Estratégia ---
-MIN_FUNDING_RATE = 0.0001       # 0.01% por período (Funding positivo)
-NEGATIVE_FUNDING_THRESHOLD = -0.0001 # Sai se o funding for pior que -0.01%
-FEE_TAKER_SPOT_DEFAULT = 0.001   # 0.10%
-FEE_TAKER_SWAP_DEFAULT = 0.0005  # 0.05%
-SLIPPAGE_SIMULATED = 0.0005     # 0.05% (Conservador para garantir realismo)
+MIN_FUNDING_RATE = 0.0001               # 0.01% por período (Funding positivo)
+NEGATIVE_FUNDING_THRESHOLD = -0.0001    # Sai se o funding for pior que -0.01%
+FEE_TAKER_SPOT_DEFAULT = 0.001          # 0.10%
+FEE_TAKER_SWAP_DEFAULT = 0.0005         # 0.05%
+SLIPPAGE_SIMULATED = 0.0005             # 0.05% (Conservador para garantir realismo)
+PAYBACK_PERIOD_DAYS = 3.0               # Meta: Recuperar o investimento em até 3 dias
+MIN_NET_APR = 0.15                      # Meta: 15% ao ano LIVRE de taxas (Net Profit)
 
 # --- Gestão de Conversões ---
-BRL_USD_RATE = 5.80             # Fallback caso a API de câmbio falhe
-MIN_ORDER_VALUE_USD = 11.00     # Mínimo para abrir ordem na Binance costuma ser $5-$10
+BRL_USD_RATE = 5.80                     # Fallback caso a API de câmbio falhe
+MIN_ORDER_VALUE_USD = 11.00             # Mínimo para abrir ordem na Binance costuma ser $5-$10

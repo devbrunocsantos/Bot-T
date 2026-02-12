@@ -228,9 +228,16 @@ class CashAndCarryBot:
                 LOGGER.debug(f"Não foi possível obter intervalo dinâmico para {symbol}, usando 8h: {e}")
                 pass
 
-            projected_24h_return = funding_rate * funding_frequency_daily
+            # Fórmula: Meta Anual / 365 * Dias
+            required_net_profit = (MIN_NET_APR / 365) * PAYBACK_PERIOD_DAYS
+            
+            # O retorno tem que pagar as Taxas + O Lucro Mínimo
+            hurdle_rate = total_fees_real + required_net_profit
 
-            if projected_24h_return < (total_fees_real * 1.2): 
+            # Projeção do Funding Real
+            projected_return = (funding_rate * funding_frequency_daily) * PAYBACK_PERIOD_DAYS
+
+            if projected_return < hurdle_rate:
                 return False, funding_rate, "LOW_PROFIT_VS_FEES"
 
             # 3. Verificação de Basis (Usando os preços recebidos)
