@@ -414,8 +414,15 @@ class CashAndCarryBot:
             
             drawdown = (self.peak_capital - total_equity) / self.peak_capital if self.peak_capital > 0 else 0
 
-            # --- Lógica de Reinvestimento Condicional ---
-            self._process_compounding(symbol, spot_symbol, price_spot, price_swap)
+            try:
+                self.auto_balance_wallets()
+            except Exception as e:
+                LOGGER.error(f"Falha no auto-balanceamento durante monitoramento: {e}")
+
+            # Se passou nos filtros, executa o aumento de posição
+            if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
+                # --- Lógica de Reinvestimento Condicional ---
+                self._process_compounding(symbol, spot_symbol, price_spot, price_swap)
 
             # --- Logging ---
             log_data = {
@@ -553,119 +560,118 @@ class CashAndCarryBot:
             LOGGER.info(f"Reinvestimento adiado. Funding baixo: {current_funding:.4%}")
             return
 
-        # Se passou nos filtros, executa o aumento de posição
-        if self.pending_deposit_usd >= MIN_ORDER_VALUE_USD:
+        
             
-            LOGGER.info(f"--- INICIANDO REINVESTIMENTO REAL: ${self.pending_deposit_usd:.2f} ---")
+        LOGGER.info(f"--- INICIANDO REINVESTIMENTO REAL: ${self.pending_deposit_usd:.2f} ---")
 
-            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
-            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
+        real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
+        real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
 
-            estimated_fee_pct = (real_fee_spot + real_fee_swap) * 1.1
+        estimated_fee_pct = (real_fee_spot + real_fee_swap) * 1.1
+        
+        # Cálculo do capital útil descontando taxas previstas
+        usable_capital = self.pending_deposit_usd / (1 + estimated_fee_pct)
+        allocation_per_leg = usable_capital / 2
+
+        # --- 1. Preparação dos Parâmetros de Ordem (Precisão e Slippage) ---
+        try:
+            # Slippage
+            slippage_spot = self._calculate_market_impact(spot_symbol, allocation_per_leg, side='buy', swap=False)
+            slippage_swap = self._calculate_market_impact(symbol, allocation_per_leg, side='sell', swap=True)
+
+            # Preços Limite (com margem para garantir execução IOC)
+            limit_buy_price = price_spot * (1 + slippage_spot)
+            limit_sell_price = price_swap * (1 - slippage_swap)
+
+            # Cálculo da quantidade bruta
+            raw_amount = allocation_per_leg / limit_buy_price
+
+            # Ajuste de Precisão para a Exchange (Ex: 0.00123 BTC)
+            amount_spot = self.exchange_spot.amount_to_precision(spot_symbol, raw_amount)
+            amount_swap = self.exchange_swap.amount_to_precision(symbol, raw_amount)
             
-            # Cálculo do capital útil descontando taxas previstas
-            usable_capital = self.pending_deposit_usd / (1 + estimated_fee_pct)
-            allocation_per_leg = usable_capital / 2
+            # Ajuste de Precisão de Preço
+            price_spot_fmt = self.exchange_spot.price_to_precision(spot_symbol, limit_buy_price)
+            price_swap_fmt = self.exchange_swap.price_to_precision(symbol, limit_sell_price)
 
-            # --- 1. Preparação dos Parâmetros de Ordem (Precisão e Slippage) ---
-            try:
-                # Slippage
-                slippage_spot = self._calculate_market_impact(spot_symbol, allocation_per_leg, side='buy', swap=False)
-                slippage_swap = self._calculate_market_impact(symbol, allocation_per_leg, side='sell', swap=True)
+        except Exception as e:
+            LOGGER.error(f"Erro na preparação do reinvestimento: {e}")
+            return
 
-                # Preços Limite (com margem para garantir execução IOC)
-                limit_buy_price = price_spot * (1 + slippage_spot)
-                limit_sell_price = price_swap * (1 - slippage_swap)
+        # --- 2. Execução Paralela (Spot Buy + Swap Sell) ---
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_spot = executor.submit(
+                self._place_limit_ioc_order, 
+                self.exchange_spot, spot_symbol, 'buy', amount_spot, price_spot_fmt
+            )
+            
+            future_swap = executor.submit(
+                self._place_limit_ioc_order, 
+                self.exchange_swap, symbol, 'sell', amount_swap, price_swap_fmt
+            )
+            
+            order_spot = future_spot.result()
+            order_swap = future_swap.result()
 
-                # Cálculo da quantidade bruta
-                raw_amount = allocation_per_leg / limit_buy_price
+        # --- 3. Verificação e Atualização de Estado ---
+        spot_ok = order_spot is not None and order_spot['status'] in ['filled', 'closed']
+        swap_ok = order_swap is not None and order_swap['status'] in ['filled', 'closed']
 
-                # Ajuste de Precisão para a Exchange (Ex: 0.00123 BTC)
-                amount_spot = self.exchange_spot.amount_to_precision(spot_symbol, raw_amount)
-                amount_swap = self.exchange_swap.amount_to_precision(symbol, raw_amount)
-                
-                # Ajuste de Precisão de Preço
-                price_spot_fmt = self.exchange_spot.price_to_precision(spot_symbol, limit_buy_price)
-                price_swap_fmt = self.exchange_swap.price_to_precision(symbol, limit_sell_price)
+        if spot_ok and swap_ok:
+            # Recupera dados executados reais da exchange
+            filled_qty = float(order_swap['filled'])
+            exec_price_spot = float(order_spot['average'])
+            exec_price_swap = float(order_swap['average'])
 
-            except Exception as e:
-                LOGGER.error(f"Erro na preparação do reinvestimento: {e}")
-                return
+            # Cálculo de Taxas Reais Pagas
+            cost_spot = (filled_qty * exec_price_spot) * real_fee_spot
+            cost_swap = (filled_qty * exec_price_swap) * real_fee_swap
+            actual_fees = cost_spot + cost_swap
 
-            # --- 2. Execução Paralela (Spot Buy + Swap Sell) ---
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                future_spot = executor.submit(
-                    self._place_limit_ioc_order, 
-                    self.exchange_spot, spot_symbol, 'buy', amount_spot, price_spot_fmt
-                )
-                
-                future_swap = executor.submit(
-                    self._place_limit_ioc_order, 
-                    self.exchange_swap, symbol, 'sell', amount_swap, price_swap_fmt
-                )
-                
-                order_spot = future_spot.result()
-                order_swap = future_swap.result()
+            # Dados Antigos para Ponderação
+            old_qty = self.position['size']
+            old_price_spot = self.position['entry_price_spot']
+            old_price_swap = self.position['entry_price_swap']
+            
+            total_new_qty = old_qty + filled_qty
 
-            # --- 3. Verificação e Atualização de Estado ---
-            spot_ok = order_spot is not None and order_spot['status'] in ['filled', 'closed']
-            swap_ok = order_swap is not None and order_swap['status'] in ['filled', 'closed']
+            # Cálculo do Novo Preço Médio (Weighted Average)
+            avg_price_spot = ((old_price_spot * old_qty) + (exec_price_spot * filled_qty)) / total_new_qty
+            avg_price_swap = ((old_price_swap * old_qty) + (exec_price_swap * filled_qty)) / total_new_qty
 
-            if spot_ok and swap_ok:
-                # Recupera dados executados reais da exchange
-                filled_qty = float(order_swap['filled'])
-                exec_price_spot = float(order_spot['average'])
-                exec_price_swap = float(order_swap['average'])
+            # Atualização do Estado
+            self.position['size'] = total_new_qty
+            self.position['entry_price_spot'] = avg_price_spot
+            self.position['entry_price_swap'] = avg_price_swap
+            
+            # Atualização Financeira
+            self.capital += self.pending_deposit_usd # Incorpora o depósito ao capital do bot
+            self.capital -= actual_fees              # Desconta as taxas pagas
+            self.accumulated_fees += actual_fees
+            self.pending_deposit_usd = 0.0           # Zera o pendente
+            
+            LOGGER.info(f"REINVESTIMENTO SUCESSO: +{filled_qty} moedas. Novo PM Spot: {avg_price_spot:.4f}")
+            self._save_state()
 
-                # Cálculo de Taxas Reais Pagas
-                cost_spot = (filled_qty * exec_price_spot) * real_fee_spot
-                cost_swap = (filled_qty * exec_price_swap) * real_fee_swap
-                actual_fees = cost_spot + cost_swap
+        else:
+            # --- Lógica de Rollback (Segurança) ---
+            LOGGER.critical("FALHA PARCIAL NO REINVESTIMENTO! Revertendo...")
+            
+            # Se comprou Spot mas falhou Swap -> Vende Spot
+            if spot_ok and not swap_ok:
+                try:
+                    self.exchange_spot.create_market_sell_order(spot_symbol, order_spot['filled'])
+                    LOGGER.info("Rollback: Spot extra vendido.")
+                except Exception as e:
+                    LOGGER.critical(f"ERRO ROLLBACK SPOT: {e}")
 
-                # Dados Antigos para Ponderação
-                old_qty = self.position['size']
-                old_price_spot = self.position['entry_price_spot']
-                old_price_swap = self.position['entry_price_swap']
-                
-                total_new_qty = old_qty + filled_qty
-
-                # Cálculo do Novo Preço Médio (Weighted Average)
-                avg_price_spot = ((old_price_spot * old_qty) + (exec_price_spot * filled_qty)) / total_new_qty
-                avg_price_swap = ((old_price_swap * old_qty) + (exec_price_swap * filled_qty)) / total_new_qty
-
-                # Atualização do Estado
-                self.position['size'] = total_new_qty
-                self.position['entry_price_spot'] = avg_price_spot
-                self.position['entry_price_swap'] = avg_price_swap
-                
-                # Atualização Financeira
-                self.capital += self.pending_deposit_usd # Incorpora o depósito ao capital do bot
-                self.capital -= actual_fees              # Desconta as taxas pagas
-                self.accumulated_fees += actual_fees
-                self.pending_deposit_usd = 0.0           # Zera o pendente
-                
-                LOGGER.info(f"REINVESTIMENTO SUCESSO: +{filled_qty} moedas. Novo PM Spot: {avg_price_spot:.4f}")
-                self._save_state()
-
-            else:
-                # --- Lógica de Rollback (Segurança) ---
-                LOGGER.critical("FALHA PARCIAL NO REINVESTIMENTO! Revertendo...")
-                
-                # Se comprou Spot mas falhou Swap -> Vende Spot
-                if spot_ok and not swap_ok:
-                    try:
-                        self.exchange_spot.create_market_sell_order(spot_symbol, order_spot['filled'])
-                        LOGGER.info("Rollback: Spot extra vendido.")
-                    except Exception as e:
-                        LOGGER.critical(f"ERRO ROLLBACK SPOT: {e}")
-
-                # Se vendeu Swap mas falhou Spot -> Fecha Swap
-                elif swap_ok and not spot_ok:
-                    try:
-                        self.exchange_swap.create_market_buy_order(symbol, order_swap['filled'])
-                        LOGGER.info("Rollback: Short extra fechado.")
-                    except Exception as e:
-                        LOGGER.critical(f"ERRO ROLLBACK SWAP: {e}")
+            # Se vendeu Swap mas falhou Spot -> Fecha Swap
+            elif swap_ok and not spot_ok:
+                try:
+                    self.exchange_swap.create_market_buy_order(symbol, order_swap['filled'])
+                    LOGGER.info("Rollback: Short extra fechado.")
+                except Exception as e:
+                    LOGGER.critical(f"ERRO ROLLBACK SWAP: {e}")
 
     def _get_real_fee_rate(self, symbol, swap=False):
         """
@@ -802,10 +808,13 @@ class CashAndCarryBot:
             threshold_usd: Mínimo de diferença para justificar uma transferência (evita mover centavos).
         """
         try:
+            LOGGER.info("Iniciando verificação de balanceamento entre carteiras...")
             # Busca Saldo Livre Real (Free Balance)
             # Spot
             bal_spot_raw = self.exchange_spot.fetch_balance()
             free_spot = bal_spot_raw.get('USDT', {}).get('free', 0.0)
+
+            time.sleep(2)  # Pequena pausa para evitar rate limit
 
             # Futuros
             bal_swap_raw = self.exchange_swap.fetch_balance()
