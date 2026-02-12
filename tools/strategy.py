@@ -866,56 +866,72 @@ class CashAndCarryBot:
         
     def auto_balance_wallets(self, threshold_usd=1.0):
         """
-        Gerencia o equilíbrio entre carteiras.
+        Gerencia o equilíbrio entre carteiras com segurança.
         
-        Modo 1 (Sem Posição): Equilibra 50/50 perfeitamente.
-        Modo 2 (Com Posição): Detecta APORTES no Spot e envia metade para Futuros.
+        1. Calcula o saldo total REAL (Spot + Futuros).
+        2. Se estiver SEM POSIÇÃO: Rebalanceia 50/50 e detecta aportes pelo saldo total.
+        3. Se estiver COM POSIÇÃO: Ignora saldo total (para não contar PnL) e detecta aportes apenas no Spot.
         """
         try:
-            # Busca Saldo Livre Real (Free Balance)
+            # 1. Busca Saldo Livre Real (Free Balance)
             bal_spot_raw = self.exchange_spot.fetch_balance()
             free_spot = bal_spot_raw.get('USDT', {}).get('free', 0.0)
 
             bal_swap_raw = self.exchange_swap.fetch_balance()
             free_swap = bal_swap_raw.get('USDT', {}).get('free', 0.0)
 
+            current_total_real = free_spot + free_swap
+
             # --- CENÁRIO A: Bot Líquido (Sem Posição) ---
             if self.position is None:
-                current_total_real = free_spot + free_swap
+                
+                # Lógica de Detecção de Aporte (Baseada no Total)
+                if hasattr(self, 'last_real_balance') and self.last_real_balance > 0:
+                    balance_diff = current_total_real - self.last_real_balance
+                    
+                    if balance_diff > 1.0:
+                        LOGGER.info(f"Saldo total aumentou em ${balance_diff:.2f} (Aporte Detectado)")
+                        self.pending_deposit_usd += balance_diff
+                        self._save_state()
+
+                # Atualiza a referência do último saldo conhecido
+                self.last_real_balance = current_total_real
+                
+                # Lógica de Transferência 50/50
                 target_per_wallet = current_total_real / 2
                 diff = free_spot - target_per_wallet
 
-                # Se Spot tem demais -> Manda para Futuros
                 if diff > threshold_usd:
                     self.exchange_spot.transfer('USDT', diff, 'spot', 'future')
-                    LOGGER.info(f"Balanceamento Inicial: Transferido ${diff:.2f} Spot -> Futuros")
-                
-                # Se Spot tem de menos -> Puxa dos Futuros
+                    LOGGER.info(f"Balanceamento: Spot -> Futuros (${diff:.2f})")
                 elif diff < -threshold_usd:
                     amount = abs(diff)
                     self.exchange_spot.transfer('USDT', amount, 'future', 'spot')
-                    LOGGER.info(f"Balanceamento Inicial: Transferido ${amount:.2f} Futuros -> Spot")
+                    LOGGER.info(f"Balanceamento: Futuros -> Spot (${amount:.2f})")
                 
                 return current_total_real
 
             # --- CENÁRIO B: Bot Posicionado (Trade Aberto) ---
-            else:
+            else:                
+                # Se tem dinheiro livre no Spot (> $5), assumimos que é dinheiro novo (Aporte)
                 if free_spot > 5.0:
                     amount_to_transfer = free_spot / 2
                     
-                    LOGGER.info(f"💰 APORTE DETECTADO! Spot Livre: ${free_spot:.2f}")
-                    LOGGER.info(f"Preparando terreno: Enviando ${amount_to_transfer:.2f} para Futuros...")
+                    LOGGER.info(f"APORTE DETECTADO COM POSIÇÃO ABERTA! Spot Livre: ${free_spot:.2f}")
+                    LOGGER.info(f"Enviando ${amount_to_transfer:.2f} para margem...")
 
                     self.exchange_spot.transfer('USDT', amount_to_transfer, 'spot', 'future')
                     
+                    # Adiciona ao pendente para reinvestir
                     self.pending_deposit_usd += free_spot
                     self._save_state()
                 
-                return 0.0
+                return current_total_real
 
         except Exception as e:
-            LOGGER.error(f"Erro no balanceamento inteligente: {e}")
-            return 0.0
+            LOGGER.error(f"Erro no balanceamento: {e}")
+            # Em caso de erro, retorna o que tiver na memória ou 0.0 para não travar
+            return getattr(self, 'capital', 0.0)
         
     def _clean_spot_dust(self, spot_symbol):
         """
