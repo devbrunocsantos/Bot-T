@@ -3,7 +3,6 @@ import re
 import time
 from datetime import datetime
 from collections import Counter
-from difflib import SequenceMatcher
 import requests
 from configs.config import LOGGER, BRL_USD_RATE, MIN_ORDER_VALUE_USD
 from tools.database import DataManager
