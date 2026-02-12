@@ -2,6 +2,7 @@ import json
 import os
 import ccxt
 import time
+import threading
 import concurrent.futures
 from datetime import datetime
 from configs.config import *
@@ -101,6 +102,81 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.error(f"Erro ao carregar estado: {e}")
             return False
+        
+    def start_guardian(self):
+        """
+        Inicia a thread de proteção com uma CONEXÃO EXCLUSIVA.
+        Isso evita conflitos de 'Nonce' e garante que o Guardião nunca seja bloqueado.
+        """
+        # Cria uma nova instância CCXT só para o Guardião (Clone das configs)
+        guardian_config = {
+            'apiKey': API_KEY,
+            'secret': API_SECRET,
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'} # Foca em Futuros
+        }
+        
+        # O atributo é novo: self.guardian_exchange
+        self.guardian_exchange = getattr(ccxt, EXCHANGE_ID)(guardian_config)
+        
+        self.guardian_active = True
+        
+        LOGGER.info("Guardião: Conexão dedicada estabelecida.")
+        
+        guardian_thread = threading.Thread(target=self._guardian_loop, daemon=True)
+        guardian_thread.start()
+
+    def _guardian_loop(self):
+        """
+        Loop infinito que roda em background checando APENAS o risco de liquidação.
+        """
+        while self.guardian_active:
+            # 1. Se não tem posição, descansa para economizar CPU e API
+            if not self.position:
+                time.sleep(5)
+                continue
+
+            # 2. Se tem posição, monitora com frequência alta (a cada 3s)
+            try:
+                symbol = self.position['symbol']
+                
+                # Busca apenas a posição específica (leve para a API)
+                positions = self.guardian_exchange.fetch_positions([symbol])
+                my_pos = next((p for p in positions if p['symbol'] == symbol), None)
+
+                if my_pos:
+                    liq_price = float(my_pos['liquidationPrice']) if my_pos['liquidationPrice'] else 0.0
+                    mark_price = float(my_pos['markPrice'])
+                    
+                    if liq_price > 0:
+                        # Cálculo da Distância para a Morte (Short: Liq > Mark)
+                        distance_pct = (liq_price - mark_price) / mark_price
+
+                        # Log de batimento cardíaco (opcional, bom para debug)
+                        LOGGER.debug(f"Guardião: Distância Liq: {distance_pct:.2%}")
+
+                        # 3. ZONA DE PERIGO (15% de distância)
+                        if distance_pct < 0.15:
+                            LOGGER.critical(f" >>>>> GUARDIÃO: RISCO CRÍTICO DETECTADO! Distância: {distance_pct:.2%} <<<<<")
+                            LOGGER.critical(" >>>>> INICIANDO EJEÇÃO DE EMERGÊNCIA IMEDIATA <<<<<")
+                            
+                            # Dispara o fechamento na thread principal
+                            spot_symbol = self.position['spot_symbol']
+                            qty = self.position['size']
+                            
+                            # Fecha tudo
+                            self.execute_real_close(symbol, spot_symbol, qty, reason="GUARDIAN_LIQUIDATION_RISK")
+                            
+                            # Pausa breve para evitar loop de ordens enquanto processa
+                            time.sleep(10)
+                            
+            except Exception as e:
+                # O Guardião não pode parar se der erro de rede, apenas loga e tenta de novo
+                LOGGER.error(f"Erro no Guardião: {e}")
+            
+            # Frequência de Checagem: 3 segundos
+            # É rápido o suficiente para evitar flash crash, mas não estoura o Rate Limit da Binance.
+            time.sleep(3)
         
     def update_brl_rate(self, new_rate):
         """Atualiza a cotação USD/BRL e salva o estado."""
@@ -788,70 +864,57 @@ class CashAndCarryBot:
             LOGGER.warning(f"Erro ao calcular slippage real para {symbol}: {e}")
             return SLIPPAGE_SIMULATED
         
-    def auto_balance_wallets(self, threshold_usd=0.5):
+    def auto_balance_wallets(self, threshold_usd=1.0):
         """
-        Verifica os saldos reais na Binance e equilibra 50/50 
-        entre Spot e Futuros (USDT-M).
-        Detecta se houve DEPÓSITO NOVO na conta e atualiza pending_deposit_usd.
+        Gerencia o equilíbrio entre carteiras.
         
-        Args:
-            threshold_usd: Mínimo de diferença para justificar uma transferência (evita mover centavos).
+        Modo 1 (Sem Posição): Equilibra 50/50 perfeitamente.
+        Modo 2 (Com Posição): Detecta APORTES no Spot e envia metade para Futuros.
         """
         try:
-            LOGGER.info("Iniciando verificação de balanceamento entre carteiras...")
             # Busca Saldo Livre Real (Free Balance)
-            # Spot
             bal_spot_raw = self.exchange_spot.fetch_balance()
             free_spot = bal_spot_raw.get('USDT', {}).get('free', 0.0)
 
-            time.sleep(2)  # Pequena pausa para evitar rate limit
-
-            # Futuros
             bal_swap_raw = self.exchange_swap.fetch_balance()
             free_swap = bal_swap_raw.get('USDT', {}).get('free', 0.0)
 
-            current_total_real = free_spot + free_swap
+            # --- CENÁRIO A: Bot Líquido (Sem Posição) ---
+            if self.position is None:
+                current_total_real = free_spot + free_swap
+                target_per_wallet = current_total_real / 2
+                diff = free_spot - target_per_wallet
 
-            # --- Lógica de Detecção de Aporte ---
-            if hasattr(self, 'last_real_balance') and self.last_real_balance > 0:
-
-                balance_diff = current_total_real - self.last_real_balance
-
-                if balance_diff > 1.0:
-                        LOGGER.info(f"O saldo real aumentou em ${balance_diff:.2f}")
-                        self.pending_deposit_usd += balance_diff
-                        self._save_state()
-
-            self.last_real_balance = current_total_real
-
-            target_per_wallet = current_total_real / 2
-            
-            # Diferença: Quanto o Spot tem a mais (ou a menos) que o alvo
-            diff = free_spot - target_per_wallet
-
-            # Lógica de Transferência
-            # Se diff for POSITIVO (> threshold), Spot tem demais -> Manda para Futuros
-            if diff > threshold_usd:
-                amount_to_transfer = diff
-                LOGGER.info(f"Desbalanceado! Spot tem excesso. Transferindo ${amount_to_transfer:.2f} para Futuros...")
+                # Se Spot tem demais -> Manda para Futuros
+                if diff > threshold_usd:
+                    self.exchange_spot.transfer('USDT', diff, 'spot', 'future')
+                    LOGGER.info(f"Balanceamento Inicial: Transferido ${diff:.2f} Spot -> Futuros")
                 
-                # Comando CCXT para transferência: code, amount, from_account, to_account
-                self.exchange_spot.transfer('USDT', amount_to_transfer, 'spot', 'future')
-                LOGGER.info("Transferência Spot -> Futuros realizada com sucesso.")
-
-            # Se diff for NEGATIVO (< -threshold), Spot tem de menos (Futuros tem demais) -> Manda para Spot
-            elif diff < -threshold_usd:
-                amount_to_transfer = abs(diff)
-                LOGGER.info(f"Desbalanceado! Futuros tem excesso. Transferindo ${amount_to_transfer:.2f} para Spot...")
+                # Se Spot tem de menos -> Puxa dos Futuros
+                elif diff < -threshold_usd:
+                    amount = abs(diff)
+                    self.exchange_spot.transfer('USDT', amount, 'future', 'spot')
+                    LOGGER.info(f"Balanceamento Inicial: Transferido ${amount:.2f} Futuros -> Spot")
                 
-                # Note que a origem agora é 'future' e destino 'spot'
-                self.exchange_spot.transfer('USDT', amount_to_transfer, 'future', 'spot')
-                LOGGER.info("Transferência Futuros -> Spot realizada com sucesso.")
+                return current_total_real
 
-            return current_total_real
+            # --- CENÁRIO B: Bot Posicionado (Trade Aberto) ---
+            else:
+                if free_spot > 5.0:
+                    amount_to_transfer = free_spot / 2
+                    
+                    LOGGER.info(f"💰 APORTE DETECTADO! Spot Livre: ${free_spot:.2f}")
+                    LOGGER.info(f"Preparando terreno: Enviando ${amount_to_transfer:.2f} para Futuros...")
+
+                    self.exchange_spot.transfer('USDT', amount_to_transfer, 'spot', 'future')
+                    
+                    self.pending_deposit_usd += free_spot
+                    self._save_state()
+                
+                return 0.0
 
         except Exception as e:
-            LOGGER.error(f"Erro crítico ao tentar balancear carteiras: {e}")
+            LOGGER.error(f"Erro no balanceamento inteligente: {e}")
             return 0.0
         
     def _clean_spot_dust(self, spot_symbol):
