@@ -67,12 +67,6 @@ def main():
                 
                 db_manager = DataManager(db_name=db_path)
 
-            # Executa o balanceamento automático antes de operar
-            try:
-                bot.auto_balance_wallets()
-            except Exception as e:
-                LOGGER.error(f"Falha no auto-balanceamento: {e}")
-
             # Lógica de Mercado
             if bot.position is None:
                 # Se não tem posição, escaneia
@@ -116,6 +110,15 @@ def main():
                     if not top_pairs:
                         LOGGER.warning("Nenhum par encontrado no filtro de volume.")
                         final_reason = "NO_VOLUME"
+
+                    try:
+                        bot.auto_balance_wallets()
+                    except Exception as e:
+                        LOGGER.error(f"Falha no auto-balanceamento: {e}")
+
+                    if (bot.capital / 2) < MIN_ORDER_VALUE_USD:
+                        time.sleep(60)
+                        continue # Pula para o próximo ciclo
                     
                     for pair in top_pairs:
                         try:
@@ -133,49 +136,10 @@ def main():
 
                             found_spot = None
                             
-                            # ESTRATÉGIA A: Busca Direta (A mais segura e rápida)
+                            # Busca Direta
                             if symbol_spot_candidate in tickers_spot:
                                 found_spot = symbol_spot_candidate
                             
-                            # ESTRATÉGIA B: Busca Heurística (Se a direta falhou)
-                            # Só entra aqui se não achou 'POWER/USDT' direto
-                            else:
-                                best_match_score = 0
-                                best_match_symbol = None
-
-                                for s_symbol, s_data in tickers_spot.items():
-                                    # Filtra apenas pares USDT e ignora preços zerados
-                                    if not s_symbol.endswith('/USDT') or s_data['last'] == 0:
-                                        continue
-                                    
-                                    base_spot = s_symbol.split('/')[0] # ex: 'POWR'
-
-                                    # Similaridade de Texto (Levenshtein)
-                                    similarity = SequenceMatcher(None, base_swap_clean, base_spot).ratio()
-                                    
-                                    # Só consideramos candidatos com alta similaridade textual (>80%)
-                                    if similarity < 0.80:
-                                        continue
-
-                                    # Validação de Preço (O "Tira-Teima")
-                                    price_swap = tickers_swap[pair]['last']
-                                    price_spot = s_data['last']
-                                    price_diff = abs(price_swap - price_spot) / price_spot
-                                    
-                                    # Se a diferença for maior que 1.5%, rejeita (evita tokens v1/v2 ou scams)
-                                    if price_diff > 0.015:
-                                        continue
-                                    
-                                    # Se passou nos dois testes e é o "melhor" até agora, guarda
-                                    if similarity > best_match_score:
-                                        best_match_score = similarity
-                                        best_match_symbol = s_symbol
-
-                                if best_match_symbol:
-                                    found_spot = best_match_symbol
-                                    # Log de auditoria para você ver a "mágica" acontecendo
-                                    LOGGER.info(f"Link Inteligente: {pair} <-> {found_spot} (Score Texto: {best_match_score:.2f})")
-
                             # --- Verificações Finais ---
                             if not found_spot:
                                 reasons.append(f"MISSING_SPOT_DATA ({base_swap_clean})")
@@ -206,14 +170,10 @@ def main():
                         reasons.append(reason)
 
                         if is_viable:
-                            if bot.capital > MIN_ORDER_VALUE_USD:
-                                # Executa entrada
-                                success = bot.simulate_entry(pair, found_spot, fr)
-                                if success:
-                                    break
-                            else:
-                                LOGGER.warning(f"Oportunidade em {pair} ignorada: Capital insuficiente (${bot.capital:.2f})")
-                                reasons.append("INSUFFICIENT_CAPITAL")
+                            # Executa entrada
+                            success = bot.execute_real_entry(pair, found_spot, bot.capital)
+                            if success:
+                                break
                         else:
                             if reasons:
                                 final_reason = Counter(reasons).most_common(1)[0][0]

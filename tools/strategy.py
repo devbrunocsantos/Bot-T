@@ -249,13 +249,18 @@ class CashAndCarryBot:
             # Tolerância de Slippage (0.5%)
             limit_buy_price = price_spot * 1.005
             limit_sell_price = price_swap * 0.995
+
+            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
+            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
+
+            estimated_fee_pct = (real_fee_spot + real_fee_swap) * 1.1
+            
+            # Cálculo do capital útil descontando taxas previstas
+            usable_capital = allocation_usd / (1 + estimated_fee_pct)
             
             # Calcula quantidades baseadas no capital alocado
-            # Qtd = (Capital / 2) / Preço
-            raw_amount = (allocation_usd / 2) / price_spot
+            raw_amount = (usable_capital / 2) / limit_buy_price
             
-            # [CRÍTICO] Ajusta precisão para evitar erro "PRECISION" da Binance
-            # Ex: Transforma 0.12345678 BTC em 0.12345 se a exchange só aceitar 5 casas
             amount_spot = self.exchange_spot.amount_to_precision(spot_symbol, raw_amount)
             amount_swap = self.exchange_swap.amount_to_precision(symbol, raw_amount)
             
@@ -340,77 +345,6 @@ class CashAndCarryBot:
             
             return False
 
-    def simulate_entry(self, symbol, spot_symbol, funding_rate):
-        """
-        Executa entrada simulada com 'Lag' de execução e Slippage.
-        """
-        try:
-            # Se current_time for passado (backtest), usa ele. Senão usa o real.
-            now = time.time()
-
-            # Busca taxas reais para cálculo preciso
-            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
-            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
-
-            # Define margem de segurança para taxas (1.1 = 10% de buffer sobre a taxa)
-            estimated_fee_pct = (real_fee_spot + real_fee_swap) * 1.1
-            
-            # Reduz o capital base para garantir que sobra dinheiro para as taxas
-            usable_capital = self.capital / (1 + estimated_fee_pct)
-            
-            allocation_per_leg = usable_capital / 2
-
-            # 1. Perna Spot
-            ticker_spot = self.exchange_swap.fetch_ticker(symbol)
-            price_spot_raw = ticker_spot['last']
-
-            # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(spot_symbol, allocation_per_leg, side='buy', swap=False)
-            # Slippage da Perna Futura (Venda/Short)
-            slippage_swap = self._calculate_market_impact(symbol, allocation_per_leg, side='sell', swap=True)
-
-            entry_price_long = price_spot_raw * (1 + slippage_spot)
-
-            quantity = allocation_per_leg / entry_price_long
-            
-            # 2. Perna Futura
-            ticker_swap = self.exchange_swap.fetch_ticker(symbol)
-            price_swap_raw = ticker_swap['last']
-            entry_price_short = price_swap_raw * (1 - slippage_swap)
-
-            # Cálculo de Taxas
-            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
-            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
-
-            cost_spot = (quantity * entry_price_long) * real_fee_spot
-            cost_swap = (quantity * entry_price_short) * real_fee_swap
-
-            total_entry_fee = cost_spot + cost_swap
-
-            # Configuração do Funding Timestamp
-            funding_info = self.exchange_swap.fetch_funding_rate(symbol)
-            self.next_funding_timestamp = funding_info['nextFundingTimestamp'] / 1000
-            
-            self.position = {
-                'symbol': symbol,
-                'spot_symbol': spot_symbol,
-                'size': quantity,
-                'entry_price_spot': entry_price_long,
-                'entry_price_swap': entry_price_short,
-                'current_funding_rate': funding_rate,
-                'entry_time': now
-            }
-            
-            self.accumulated_fees += total_entry_fee
-            self.capital -= total_entry_fee 
-            
-            LOGGER.info(f"ENTRADA: {symbol} | Spot: {entry_price_long:.2f} | Fut: {entry_price_short:.2f} | Taxas: {total_entry_fee:.2f}")
-            self._save_state()
-            return True
-        except Exception as e:
-            LOGGER.error(f"Erro entry: {e}")
-            return False
-
     def monitor_and_manage(self, db_manager):
         if not self.position: return
 
@@ -449,7 +383,7 @@ class CashAndCarryBot:
             # --- Circuit Breaker ---
             if current_funding < NEGATIVE_FUNDING_THRESHOLD:
                 LOGGER.warning(f"SAIDA FORÇADA: Funding negativo crítico ({current_funding:.4%})")
-                self._close_position(price_swap, symbol, spot_symbol, reason="Negative Funding")
+                self.execute_real_close(symbol, spot_symbol, self.position['size'], "CIRCUIT_BREAKER")
                 return
 
             # --- Cálculo de PnL Flutuante ---
@@ -505,10 +439,8 @@ class CashAndCarryBot:
             price_swap = ticker_swap['last']
             
             # Tolerância de Slippage na SAÍDA (0.5%)
-            # Spot: Quero VENDER, aceito até 0.5% abaixo do preço
             limit_sell_spot = price_spot * 0.995
             
-            # Swap: Quero COMPRAR (Fechar Short), aceito pagar até 0.5% acima
             limit_buy_swap = price_swap * 1.005
             
             # Ajuste de precisão (Quantidade)
@@ -577,62 +509,6 @@ class CashAndCarryBot:
         except Exception as e:
             LOGGER.error(f"Erro catastrófico no fechamento real: {e}")
             return False
-
-    def _close_position(self, current_price_swap, symbol, spot_symbol, reason):
-        """
-        Encerra a posição e contabiliza PnL REALIZADO + Custos.
-        """
-        try:
-            qty = self.position['size']
-
-            try:
-                ticker_spot = self.exchange_spot.fetch_ticker(spot_symbol)
-                current_price_spot = ticker_spot['last']
-            except Exception as e:
-                LOGGER.warning(f"Erro ao buscar Spot na saída: {e}. Usando proxy.")
-                current_price_spot = current_price_swap
-
-            # Slippage na saída
-            position_value_usd = qty * current_price_swap
-
-            # Slippage da Perna Spot (Compra)
-            slippage_spot = self._calculate_market_impact(spot_symbol, position_value_usd, side='buy', swap=False)
-            # Slippage da Perna Futura (Venda/Short)
-            slippage_swap = self._calculate_market_impact(symbol, position_value_usd, side='sell', swap=True)
-
-            exit_price_long = current_price_spot * (1 - slippage_spot)
-            exit_price_short = current_price_swap * (1 + slippage_swap)
-
-            real_fee_spot = self._get_real_fee_rate(spot_symbol, swap=False)
-            real_fee_swap = self._get_real_fee_rate(symbol, swap=True)
-            
-            # 1. Cálculo do PnL do Preço (Capital Gains/Losses)
-            # Spot: (Preço Saída - Preço Entrada) * Qtd
-            pnl_spot = (exit_price_long - self.position['entry_price_spot']) * qty
-            # Futuro Short: (Preço Entrada - Preço Saída) * Qtd
-            pnl_swap = (self.position['entry_price_swap'] - exit_price_short) * qty
-            
-            net_price_pnl = pnl_spot + pnl_swap
-
-            # 2. Cálculo das Taxas de Saída
-            cost_spot = (qty * current_price_spot) * real_fee_spot  # Custo para vender o Spot
-            cost_swap = (qty * current_price_swap) * real_fee_swap  # Custo para recomprar o Futuro
-
-            exit_fee = cost_spot + cost_swap
-            
-            # 3. Consolidação Financeira
-            self.capital += net_price_pnl  # Soma o lucro (ou subtrai prejuízo) da variação de preço
-            self.capital -= exit_fee       # Subtrai taxas de saída
-            self.accumulated_fees += exit_fee
-
-            LOGGER.info(f"POSIÇÃO ENCERRADA | Motivo: {reason}")
-            LOGGER.info(f"PnL Preço: ${net_price_pnl:.2f} | Taxas Saída: ${exit_fee:.2f} | Saldo Atual: ${self.capital:.2f}")
-
-            self.position = None
-            self._save_state()
-        
-        except Exception as e:
-            LOGGER.error(f"Erro crítico ao fechar posição: {e}")
 
     def _process_compounding(self, symbol, spot_symbol, price_spot, price_swap):
         """

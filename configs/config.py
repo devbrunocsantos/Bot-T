@@ -50,4 +50,4 @@ SLIPPAGE_SIMULATED = 0.0005     # 0.05% (Conservador para garantir realismo)
 
 # --- Gestão de Conversões ---
 BRL_USD_RATE = 5.80             # Fallback caso a API de câmbio falhe
-MIN_ORDER_VALUE_USD = 5.00     # Mínimo para abrir ordem na Binance costuma ser $5-$10
+MIN_ORDER_VALUE_USD = 11.00     # Mínimo para abrir ordem na Binance costuma ser $5-$10
