@@ -244,6 +244,7 @@ class CashAndCarryBot:
                 else:
                     LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
             
+            LOGGER.info("Fim da varredura dinâmica de mercado.")
             return valid_pairs_data, tickers_swap, tickers_spot
             
         except Exception as e:

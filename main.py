@@ -101,7 +101,7 @@ def main():
                     final_reason = "ENTRY_EXECUTED"
 
                     if not top_pairs:
-                        LOGGER.warning("Nenhum par aprovado.")
+                        LOGGER.warning("Nenhum par aprovado. Aguardando próximo ciclo...")
                         last_scan_time = current_time
                         continue
 
@@ -210,7 +210,6 @@ def main():
                             'reason': final_reason
                         })
 
-                    LOGGER.info("Fim da varredura dinâmica de mercado.")
                     last_scan_time = current_time
             else:
                 # Se tem posição, monitora
