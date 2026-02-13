@@ -53,3 +53,9 @@ MIN_NET_APR = 0.15                      # Meta: 15% ao ano LIVRE de taxas (Net P
 # --- Gestão de Conversões ---
 BRL_USD_RATE = 5.80                     # Fallback caso a API de câmbio falhe
 MIN_ORDER_VALUE_USD = 11.00             # Mínimo para abrir ordem na Binance costuma ser $5-$10
+
+# --- Cores para Logs ---
+COLOR_GREEN = "\033[92m"
+COLOR_RED = "\033[91m"
+COLOR_CYAN = "\033[96m"
+COLOR_RESET = "\033[0m"

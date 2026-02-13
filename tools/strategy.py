@@ -217,7 +217,7 @@ class CashAndCarryBot:
                             swap_market = self.exchange_swap.markets.get(symbol, {})
                             spot_market = self.exchange_spot.markets.get(spot_equivalent, {})
 
-                            LOGGER.info(f"Par: {symbol} | Swap Active: {swap_market.get('active', False)} | Spot Active: {spot_market.get('active', False)}")
+                            LOGGER.info(f"{COLOR_CYAN}Par Candidato: {symbol} | Swap: {swap_market.get('active', False)} | Spot: {spot_market.get('active', False)}{COLOR_RESET}")
                             is_active = swap_market.get('active', False) and spot_market.get('active', False)
 
                             if is_active:
@@ -234,7 +234,10 @@ class CashAndCarryBot:
                 
                 if is_valid:
                     valid_pairs_data[symbol] = rate
-                    LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}")
+                    LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
+                else:
+                    if avg_rate > 0:
+                        LOGGER.debug(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
             
             return valid_pairs_data, tickers_swap, tickers_spot
             
