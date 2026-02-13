@@ -215,8 +215,6 @@ class CashAndCarryBot:
 
                             is_active = swap_market.get('active', True) and spot_market.get('active', True)
 
-                            LOGGER.info(f"Par candidato: {symbol} | Volume: {data['quoteVolume']:.2f} USD | Status Swap: {'Ativo' if swap_market.get('active', True) else 'Inativo'} | Status Spot: {'Ativo' if spot_market.get('active', True) else 'Inativo'}")
-
                             if is_active:
                                 candidates.append(symbol)
 

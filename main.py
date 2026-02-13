@@ -102,6 +102,7 @@ def main():
 
                     if not top_pairs:
                         LOGGER.warning("Nenhum par encontrado no filtro de volume.")
+                        last_scan_time = current_time
                         continue
 
                     viable_opportunities = []
