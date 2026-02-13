@@ -204,7 +204,7 @@ class CashAndCarryBot:
             self.exchange_spot.load_markets()
 
             candidates = []
-            
+
             for symbol, data in tickers_swap.items():
                 if '/USDT:USDT' in symbol:
 
@@ -217,7 +217,8 @@ class CashAndCarryBot:
                             swap_market = self.exchange_swap.markets.get(symbol, {})
                             spot_market = self.exchange_spot.markets.get(spot_equivalent, {})
 
-                            is_active = swap_market.get('active', True) and spot_market.get('active', True)
+                            LOGGER.info(f"Par: {symbol} | Swap Active: {swap_market.get('active', False)} | Spot Active: {spot_market.get('active', False)}")
+                            is_active = swap_market.get('active', False) and spot_market.get('active', False)
 
                             if is_active:
                                 candidates.append(symbol)
