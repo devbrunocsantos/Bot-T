@@ -505,7 +505,7 @@ class CashAndCarryBot:
                 LOGGER.warning(f"Falha ao buscar preço Spot para monitoramento: {e}. Usando proxy.")
                 price_spot = price_swap
             
-            # --- Lógica de Funding (Inalterada) ---
+            # --- Lógica de Funding ---
             funding_info = self.exchange_swap.fetch_funding_rate(symbol)
             current_funding = funding_info['fundingRate']
 
