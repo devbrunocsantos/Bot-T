@@ -213,7 +213,7 @@ class CashAndCarryBot:
                     valid_pairs_data[symbol] = rate
                     LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Médio/Atual: {rate:.4%}")
             
-            return valid_pairs_data
+            return valid_pairs_data, tickers
             
         except Exception as e:
             LOGGER.error(f"Erro no scanner: {e}")

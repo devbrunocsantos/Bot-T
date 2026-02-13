@@ -84,7 +84,7 @@ def main():
                         last_scan_time = current_time
                         continue
 
-                    top_pairs = bot.get_top_volume_pairs()
+                    top_pairs, tickers_swap = bot.get_top_volume_pairs()
 
                     # --- Batch Fetching Híbrido (Spot + Swaps) ---
                     all_tickers = {}
@@ -92,10 +92,6 @@ def main():
                     if top_pairs:
                         try:
                             LOGGER.info("Baixando dados de mercado (Spot + Swaps) e Funding...")
-                            
-                            # 1. Busca Tickers de Futuros
-                            tickers_swap = bot.exchange_swap.fetch_tickers()
-                            
                             # 2. Busca Tickers de Spot
                             tickers_spot = bot.exchange_spot.fetch_tickers()
                             
@@ -109,14 +105,15 @@ def main():
                     # ------------------------------------------------------------------
 
                     # Variáveis para estatísticas do log de scanner
-                    best_fr = -100.0
-                    best_pair = None
                     reasons = []
                     final_reason = "ENTRY_EXECUTED"
 
                     if not top_pairs:
                         LOGGER.warning("Nenhum par encontrado no filtro de volume.")
                         final_reason = "NO_VOLUME"
+
+                    viable_opportunities = []
+                    unviable_opportunities = []
                     
                     for pair, fr_rate in top_pairs.items():
                         try:
@@ -148,36 +145,80 @@ def main():
                                 price_swap=price_swap, 
                                 funding_rate=fr_rate
                             )
+
+                            if is_viable:
+                                LOGGER.info(f"Candidato Classificado: {pair} | Funding: {fr:.4%}")
+                                viable_opportunities.append({
+                                    'pair': pair,
+                                    'spot_symbol': found_spot,
+                                    'funding_rate': fr,
+                                    'price_spot': price_spot,
+                                    'price_swap': price_swap
+                                })
+                            else:
+                                unviable_opportunities.append({
+                                    'pair': pair,
+                                    'spot_symbol': found_spot,
+                                    'funding_rate': fr,
+                                    'price_spot': price_spot,
+                                    'price_swap': price_swap
+                                })
+
+                            reasons.append(reason)
+
                         except Exception as e:
                             LOGGER.error(f"Erro ao processar par {pair}: {e}")
                             reasons.append("PROCESSING_ERROR")
                             continue
 
-                        if fr > best_fr:
-                            best_fr = fr
-                            best_pair = pair
+                        time.sleep(0.5)
 
-                        reasons.append(reason)
+                    if viable_opportunities:
+                        best_opportunity = sorted(
+                            viable_opportunities, 
+                            key=lambda x: x['funding_rate'], 
+                            reverse=True
+                        )[0]
 
-                        if is_viable:
-                            # Executa entrada
-                            success = bot.execute_real_entry(pair, found_spot, bot.capital)
-                            if success:
-                                break
-                        else:
-                            if reasons:
-                                final_reason = Counter(reasons).most_common(1)[0][0]
+                        LOGGER.info("MELHOR OPORTUNIDADE:")
+                        LOGGER.info(f"Par: {best_opportunity['pair']}")
+                        LOGGER.info(f"Funding: {best_opportunity['funding_rate']:.4%}")
 
-                    if best_pair is None and top_pairs:
-                         best_pair = top_pairs[0]
+                        # Executa entrada
+                        success = bot.execute_real_entry(
+                            best_opportunity['pair'], 
+                            best_opportunity['spot_symbol'], 
+                            bot.capital
+                        )
 
-                    db_manager.log_scan_attempt({
-                        'total_analyzed': len(top_pairs),
-                        'passed_volume': len(top_pairs),
-                        'best_funding': best_fr,
-                        'best_pair': best_pair,
-                        'reason': final_reason
-                    })
+                        db_manager.log_scan_attempt({
+                            'total_analyzed': len(top_pairs),
+                            'passed_volume': len(top_pairs),
+                            'best_funding': best_opportunity['funding_rate'],
+                            'best_pair': best_opportunity['pair'],
+                            'reason': final_reason
+                        })
+
+                        if success:
+                            break
+                        
+                    else:
+                        if reasons:
+                            final_reason = Counter(reasons).most_common(1)[0][0]
+
+                        best_pair = sorted(
+                            unviable_opportunities, 
+                            key=lambda x: x['funding_rate'], 
+                            reverse=True
+                        )[0]
+                        
+                        db_manager.log_scan_attempt({
+                            'total_analyzed': len(top_pairs),
+                            'passed_volume': len(top_pairs),
+                            'best_funding': best_pair['funding_rate'],
+                            'best_pair': best_pair['pair'],
+                            'reason': final_reason
+                        })
 
                     LOGGER.info("Fim da varredura dinâmica de mercado.")
                     last_scan_time = current_time
