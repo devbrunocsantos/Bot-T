@@ -263,16 +263,16 @@ class CashAndCarryBot:
                 return False, 0.0, 0.0
             
             recent_rates = [entry['fundingRate'] for entry in history[-9:]]
+            current_rate = recent_rates[-1]
             
             # 1. Média Atrativa
             avg_rate = sum(recent_rates) / len(recent_rates)
             if avg_rate < 0.0001: 
-                return False, 0.0, 0.0
+                return False, current_rate, avg_rate
 
             # 2. Momento Atual Positivo
-            current_rate = recent_rates[-1]
             if current_rate < 0:
-                return False, 0.0, 0.0
+                return False, current_rate, avg_rate
             
             return True, current_rate, avg_rate
             
