@@ -211,7 +211,7 @@ class CashAndCarryBot:
                 
                 if is_valid:
                     valid_pairs_data[symbol] = rate
-                    LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Médio: {avg_rate:.4%} | Funding Atual: {rate:.4%}")
+                    LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}")
             
             return valid_pairs_data, tickers
             
@@ -229,24 +229,24 @@ class CashAndCarryBot:
             history = self.exchange_swap.fetch_funding_rate_history(symbol, limit=20)
             
             if not history or len(history) < 9: 
-                return False, 0.0
+                return False, 0.0, 0.0
             
             recent_rates = [entry['fundingRate'] for entry in history[-9:]]
             
             # 1. Média Atrativa
             avg_rate = sum(recent_rates) / len(recent_rates)
             if avg_rate < 0.0001: 
-                return False, 0.0
+                return False, 0.0, 0.0
 
             # 2. Momento Atual Positivo
             current_rate = recent_rates[-1]
             if current_rate < 0:
-                return False, 0.0
+                return False, 0.0, 0.0
             
             return True, current_rate, avg_rate
             
         except: 
-            return False, 0.0
+            return False, 0.0, 0.0
 
     def check_entry_opportunity(self, symbol, spot_symbol, price_spot, price_swap, funding_rate):
         """
