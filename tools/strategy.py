@@ -217,8 +217,14 @@ class CashAndCarryBot:
                             swap_market = self.exchange_swap.markets.get(symbol, {})
                             spot_market = self.exchange_spot.markets.get(spot_equivalent, {})
 
-                            LOGGER.info(f"{COLOR_CYAN}Par Candidato: {symbol} | Swap: {swap_market.get('active', False)} | Spot: {spot_market.get('active', False)}{COLOR_RESET}")
-                            is_active = swap_market.get('active', False) and spot_market.get('active', False)
+                            swap_active = swap_market.get('active', False)
+                            spot_active = spot_market.get('active', False)
+
+                            swap_fmt = f"{COLOR_GREEN}True{COLOR_CYAN}" if swap_active else f"{COLOR_RED}False{COLOR_CYAN}"
+                            spot_fmt = f"{COLOR_GREEN}True{COLOR_CYAN}" if spot_active else f"{COLOR_RED}False{COLOR_CYAN}"
+
+                            LOGGER.info(f"{COLOR_CYAN}Par Candidato: {symbol} | Swap: {swap_fmt} | Spot: {spot_fmt}{COLOR_RESET}")
+                            is_active = swap_active and spot_active
 
                             if is_active:
                                 candidates.append(symbol)
