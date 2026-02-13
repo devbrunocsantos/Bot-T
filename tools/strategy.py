@@ -158,8 +158,8 @@ class CashAndCarryBot:
 
                         # 3. ZONA DE PERIGO (15% de distância)
                         if distance_pct < 0.15:
-                            LOGGER.critical(f" >>>>> GUARDIÃO: RISCO CRÍTICO DETECTADO! Distância: {distance_pct:.2%} <<<<<")
-                            LOGGER.critical(" >>>>> INICIANDO EJEÇÃO DE EMERGÊNCIA IMEDIATA <<<<<")
+                            LOGGER.critical(f"{COLOR_RED} >>>>> GUARDIÃO: RISCO CRÍTICO DETECTADO! Distância: {distance_pct:.2%} <<<<<{COLOR_RESET}")
+                            LOGGER.critical(f"{COLOR_RED} >>>>> INICIANDO EJEÇÃO DE EMERGÊNCIA IMEDIATA <<<<<{COLOR_RESET}")
                             
                             # Dispara o fechamento na thread principal
                             spot_symbol = self.position['spot_symbol']
