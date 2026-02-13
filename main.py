@@ -102,7 +102,7 @@ def main():
 
                     if not top_pairs:
                         LOGGER.warning("Nenhum par encontrado no filtro de volume.")
-                        final_reason = "NO_VOLUME"
+                        continue
 
                     viable_opportunities = []
                     unviable_opportunities = []

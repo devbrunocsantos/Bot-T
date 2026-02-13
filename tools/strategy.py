@@ -206,15 +206,19 @@ class CashAndCarryBot:
 
                     spot_equivalent = symbol.split(':')[0]
 
-                    # Checa se o mercado está aberto para negociação
-                    is_swap_active = self.exchange_swap.markets[symbol].get('active', False)
-                    is_spot_active = self.exchange_spot.markets[spot_equivalent].get('active', False) if spot_equivalent in self.exchange_spot.markets else False
-
-                    if is_swap_active and is_spot_active:
+                    if spot_equivalent in available_spot_pairs:
                         if data['quoteVolume'] >= MIN_24H_VOLUME_USD:
-                            candidates.append(symbol)
 
-                            candidates.append(symbol)
+                            # Verificação segura de status
+                            swap_market = self.exchange_swap.markets.get(symbol, {})
+                            spot_market = self.exchange_spot.markets.get(spot_equivalent, {})
+
+                            is_active = swap_market.get('active', True) and spot_market.get('active', True)
+
+                            LOGGER.info(f"Par candidato: {symbol} | Volume: {data['quoteVolume']:.2f} USD | Status Swap: {'Ativo' if swap_market.get('active', True) else 'Inativo'} | Status Spot: {'Ativo' if spot_market.get('active', True) else 'Inativo'}")
+
+                            if is_active:
+                                candidates.append(symbol)
 
             top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:50]
             
