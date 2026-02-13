@@ -333,11 +333,11 @@ class CashAndCarryBot:
             
             # O retorno tem que pagar as Taxas + O Lucro Mínimo
             hurdle_rate = total_fees_real + required_net_profit
-            msg_hurdle_rate = f"{COLOR_RED}{hurdle_rate}{COLOR_RESET}"
+            msg_hurdle_rate = f"{COLOR_RED}{hurdle_rate:.4%}{COLOR_RESET}"
 
             # Projeção do Funding Real
             projected_return = (funding_rate * funding_frequency_daily) * PAYBACK_PERIOD_DAYS
-            msg_projected_return = f"{COLOR_GREEN}{projected_return}{COLOR_RESET}" if projected_return >= hurdle_rate else f"{COLOR_RED}{projected_return}{COLOR_RESET}"
+            msg_projected_return = f"{COLOR_GREEN}{projected_return:.4%}{COLOR_RESET}" if projected_return >= hurdle_rate else f"{COLOR_RED}{projected_return:.4%}{COLOR_RESET}"
 
             LOGGER.info(f"Projeção de Funding: {symbol} | {msg_projected_return}")
             LOGGER.info(f"Funding para 0.15: {msg_hurdle_rate}")
