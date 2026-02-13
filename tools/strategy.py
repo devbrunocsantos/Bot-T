@@ -52,6 +52,8 @@ class CashAndCarryBot:
             self.last_real_balance = current_real_balance
             self.pending_deposit_usd = 0.0
             self.next_funding_timestamp = None
+            self.boredom_score = 0
+            self.last_funding_rate = 0.0
             self.last_usd_brl = BRL_USD_RATE
 
             self._save_state()
@@ -71,6 +73,8 @@ class CashAndCarryBot:
                 'last_real_balance': self.last_real_balance,
                 'pending_deposit_usd': self.pending_deposit_usd,
                 'next_funding_timestamp': self.next_funding_timestamp,
+                'boredom_score': getattr(self, 'boredom_score', 0),
+                'last_funding_rate': getattr(self, 'last_funding_rate', 0.0),
                 'last_usd_brl': self.last_usd_brl
             }
             with open(self.state_file, 'w') as f:
@@ -96,6 +100,8 @@ class CashAndCarryBot:
             self.last_real_balance = state.get('last_real_balance', 0.0)
             self.pending_deposit_usd = state.get('pending_deposit_usd', 0.0)
             self.next_funding_timestamp = state.get('next_funding_timestamp')
+            self.boredom_score = state.get('boredom_score', 0)
+            self.last_funding_rate = state.get('last_funding_rate', 0.0)
             self.last_usd_brl = state.get('last_usd_brl', BRL_USD_RATE)
             
             LOGGER.info("Estado anterior carregado com SUCESSO.")
@@ -502,6 +508,43 @@ class CashAndCarryBot:
             # --- Lógica de Funding (Inalterada) ---
             funding_info = self.exchange_swap.fetch_funding_rate(symbol)
             current_funding = funding_info['fundingRate']
+
+            if current_funding < TARGET_FUNDING:
+                penalty = 1 # Peso base (o tempo está passando e o lucro é baixo)
+
+                # 2. Aceleração por Gravidade (Se for muito baixo, < 50% da meta)
+                if current_funding < (TARGET_FUNDING / 2):
+                    penalty += 2 
+                    LOGGER.info(f"Funding Crítico ({current_funding:.4%}). Acelerando saída...")
+
+                # 3. Aceleração por Tendência de Queda
+                # Se o funding atual for PIOR que o último registrado, aumenta o peso
+                if hasattr(self, 'last_funding_rate') and current_funding < self.last_funding_rate:
+                    penalty += 3
+                    LOGGER.info(f"Tendência de Queda detectada ({self.last_funding_rate:.4%} -> {current_funding:.4%}). Penalidade máxima aplicada.")
+
+                self.boredom_score += penalty
+                
+                LOGGER.warning(f"⚠️ Alerta de Baixa Performance: Score {self.boredom_score}/{EXIT_SCORE_LIMIT} | Funding: {current_funding:.4%}")
+
+                # Gatilho de Saída
+                if self.boredom_score >= EXIT_SCORE_LIMIT:
+                    LOGGER.warning(f"{COLOR_RED}LIMITE DE TÉDIO ATINGIDO. O par {symbol} não é mais rentável.{COLOR_RESET}")
+                    
+                    success = self.execute_real_close(symbol, spot_symbol, self.position['size'], "LOW_PERFORMANCE_EXIT")
+                    
+                    if success:
+                        self.boredom_score = 0 # Reseta após sair
+                        return # Interrompe o resto da função
+
+            else:
+                # Se o funding voltou a ficar bom, o score diminui (ou zera)
+                if self.boredom_score > 0:
+                    self.boredom_score = max(0, self.boredom_score - 2) # Recupera 2 pontos por ciclo bom
+                    LOGGER.info(f"Funding recuperado ({current_funding:.4%}). Score de tédio reduzido para {self.boredom_score}.")
+
+            # Atualiza a memória para a próxima comparação
+            self.last_funding_rate = current_funding
             
             api_next_funding_ts = funding_info.get('nextFundingTimestamp')
             api_next_funding_sec = api_next_funding_ts / 1000 if api_next_funding_ts else None
@@ -551,6 +594,7 @@ class CashAndCarryBot:
                 'simulated_fees': self.accumulated_fees,
                 'accumulated_profit': self.accumulated_profit + net_pnl_price,
                 'max_drawdown': drawdown,
+                'boredom_score': self.boredom_score,
                 'action': 'HOLD'
             }
             
