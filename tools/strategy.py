@@ -236,20 +236,20 @@ class CashAndCarryBot:
             for symbol in top_candidates:
                 # O filtro agora retorna (Bool, Rate)
                 is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
-                time.sleep(1)  # Pequena pausa para evitar sobrecarga de API
+                time.sleep(0.5)  # Pequena pausa para evitar sobrecarga de API
                 
                 if is_valid:
                     valid_pairs_data[symbol] = rate
                     LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
                 else:
                     if avg_rate > 0:
-                        LOGGER.debug(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
+                        LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
             
             return valid_pairs_data, tickers_swap, tickers_spot
             
         except Exception as e:
             LOGGER.error(f"Erro no scanner: {e}")
-            return {}
+            return {}, {}, {}
 
     def _analyze_funding_consistency(self, symbol):
         """

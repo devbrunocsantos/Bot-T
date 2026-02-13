@@ -101,7 +101,7 @@ def main():
                     final_reason = "ENTRY_EXECUTED"
 
                     if not top_pairs:
-                        LOGGER.warning("Nenhum par encontrado no filtro de volume.")
+                        LOGGER.warning("Nenhum par aprovado.")
                         last_scan_time = current_time
                         continue
 
