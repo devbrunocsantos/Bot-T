@@ -200,7 +200,11 @@ class CashAndCarryBot:
             available_spot_pairs = set(tickers_spot.keys())
             
             # Pré-filtro de volume
+            self.exchange_swap.load_markets()
+            self.exchange_spot.load_markets()
+
             candidates = []
+            
             for symbol, data in tickers_swap.items():
                 if '/USDT:USDT' in symbol:
 
@@ -218,13 +222,14 @@ class CashAndCarryBot:
                             if is_active:
                                 candidates.append(symbol)
 
-            top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:50]
+            top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:25]
             
             valid_pairs_data = {} 
 
             for symbol in top_candidates:
                 # O filtro agora retorna (Bool, Rate)
                 is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
+                time.sleep(1)  # Pequena pausa para evitar sobrecarga de API
                 
                 if is_valid:
                     valid_pairs_data[symbol] = rate
