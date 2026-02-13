@@ -206,7 +206,7 @@ class CashAndCarryBot:
             candidates = []
 
             for symbol, data in tickers_swap.items():
-                if '/USDT:USDT' in symbol:
+                if '/USDT:USDT' in symbol and not 'BNB' in symbol:
 
                     spot_equivalent = symbol.split(':')[0]
 
@@ -236,7 +236,7 @@ class CashAndCarryBot:
             for symbol in top_candidates:
                 # O filtro agora retorna (Bool, Rate)
                 is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
-                
+
                 time.sleep(0.5)  # Pequena pausa para evitar sobrecarga de API
                 
                 if is_valid:
