@@ -242,8 +242,7 @@ class CashAndCarryBot:
                     valid_pairs_data[symbol] = rate
                     LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
                 else:
-                    if avg_rate > 0:
-                        LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
+                    LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
             
             return valid_pairs_data, tickers_swap, tickers_spot
             
