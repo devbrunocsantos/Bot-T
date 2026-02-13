@@ -206,7 +206,11 @@ class CashAndCarryBot:
 
                     spot_equivalent = symbol.split(':')[0]
 
-                    if spot_equivalent in available_spot_pairs:
+                    # Checa se o mercado está aberto para negociação
+                    is_swap_active = self.exchange_swap.markets[symbol].get('active', False)
+                    is_spot_active = self.exchange_spot.markets[spot_equivalent].get('active', False) if spot_equivalent in self.exchange_spot.markets else False
+
+                    if spot_equivalent in available_spot_pairs and (is_swap_active and is_spot_active):
                         if data['quoteVolume'] >= MIN_24H_VOLUME_USD:
 
                             candidates.append(symbol)
