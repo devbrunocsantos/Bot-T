@@ -184,8 +184,6 @@ class CashAndCarryBot:
         self.last_usd_brl = new_rate
         self._save_state()
 
-    # No arquivo strategy.py
-
     def get_top_volume_pairs(self):
         """
         Retorna um DICIONÁRIO {symbol: funding_rate} dos pares aprovados.
