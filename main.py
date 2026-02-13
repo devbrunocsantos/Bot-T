@@ -34,6 +34,10 @@ def main():
     # Inicialização do Bot
     bot = CashAndCarryBot() 
     
+    time.sleep(1)
+
+    #bot.start_guardian()
+    
     # Variáveis de controle de tempo
     last_scan_time = 0
     scan_interval = 3600 # 1 hora
@@ -84,25 +88,19 @@ def main():
 
                     # --- Batch Fetching Híbrido (Spot + Swaps) ---
                     all_tickers = {}
-                    all_funding = {}
                     
                     if top_pairs:
                         try:
                             LOGGER.info("Baixando dados de mercado (Spot + Swaps) e Funding...")
                             
-                            # 1. Busca Tickers de Futuros (onde operamos)
-                            # Retorna chaves como 'BTC/USDT:USDT'
+                            # 1. Busca Tickers de Futuros
                             tickers_swap = bot.exchange_swap.fetch_tickers()
                             
-                            # 2. Busca Tickers de Spot (para calcular o preço base)
+                            # 2. Busca Tickers de Spot
                             tickers_spot = bot.exchange_spot.fetch_tickers()
                             
                             # 3. Funde os dicionários
-                            # Isso garante que teremos tanto a chave 'BTC/USDT' quanto 'BTC/USDT:USDT'
                             all_tickers = {**tickers_swap, **tickers_spot}
-                            
-                            # 4. Busca Funding Rates
-                            all_funding = bot.exchange_swap.fetch_funding_rates()
                                 
                         except Exception as e:
                             LOGGER.error(f"Erro crítico ao baixar dados em lote: {e}")
@@ -120,18 +118,13 @@ def main():
                         LOGGER.warning("Nenhum par encontrado no filtro de volume.")
                         final_reason = "NO_VOLUME"
                     
-                    for pair in top_pairs:
+                    for pair, fr_rate in top_pairs.items():
                         try:
-                            # Se não temos dados de funding para este par, ignoramos
-                            if pair not in all_funding:
-                                continue
-
                             # Definições Iniciais
-                            # pair futura ex: 'POWER/USDT:USDT'
                             symbol_spot_candidate = pair.split(':')[0] 
-                            base_swap_raw = pair.split('/')[0] # 'POWER'
+                            base_swap_raw = pair.split('/')[0]
                             
-                            # Limpeza inteligente de prefixos numéricos (1000PEPE -> PEPE)
+                            # Limpeza inteligente de prefixos numéricos
                             base_swap_clean = re.sub(r"^\d+", "", base_swap_raw)
 
                             found_spot = None
@@ -147,9 +140,6 @@ def main():
 
                             price_swap = all_tickers[pair]['last']
                             price_spot = all_tickers[found_spot]['last']
-
-                            # Obtém Funding Rate
-                            fr_rate = all_funding[pair]['fundingRate']
 
                             # Passa os dados já processados
                             is_viable, fr, reason = bot.check_entry_opportunity(

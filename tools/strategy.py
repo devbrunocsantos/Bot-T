@@ -24,6 +24,7 @@ class CashAndCarryBot:
             'apiKey': API_KEY,
             'secret': API_SECRET,
             'enableRateLimit': True,
+            'rateLimit': 200
         }
 
         # Inicializa cliente de Futuros (Swap)
@@ -183,62 +184,69 @@ class CashAndCarryBot:
         self.last_usd_brl = new_rate
         self._save_state()
 
+    # No arquivo strategy.py
+
     def get_top_volume_pairs(self):
         """
-        Realiza varredura no mercado buscando pares com alto volume 
-        e histórico consistente de Funding Rates.
+        Retorna um DICIONÁRIO {symbol: funding_rate} dos pares aprovados.
+        Isso evita ter que buscar o funding de novo no main.py (Economiza API).
         """
         try:
             LOGGER.info("Iniciando varredura dinâmica de mercado...")
             tickers = self.exchange_swap.fetch_tickers()
             
-            # 1. Pré-filtro: Volume Mínimo e pares USDT
+            # Pré-filtro de volume
             candidates = []
             for symbol, data in tickers.items():
                 if '/USDT:USDT' in symbol and data['quoteVolume'] >= MIN_24H_VOLUME_USD:
                     candidates.append(symbol)
             
-            # Ordena por volume decrescente e pega os Top 20 para análise detalhada
             top_candidates = sorted(candidates, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
-            valid_pairs = []
+            
+            valid_pairs_data = {} 
 
             for symbol in top_candidates:
-                # Aplica o Filtro de Consistência (Funding Quality Score)
-                if self._analyze_funding_consistency(symbol):
-                    valid_pairs.append(symbol)
-                    LOGGER.info(f"[OK] APROVADO no filtro de consistência: {symbol}")
+                # O filtro agora retorna (Bool, Rate)
+                is_valid, rate = self._analyze_funding_consistency(symbol)
+                
+                if is_valid:
+                    valid_pairs_data[symbol] = rate
+                    LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Médio/Atual: {rate:.4%}")
             
-            return valid_pairs
+            return valid_pairs_data
+            
         except Exception as e:
             LOGGER.error(f"Erro no scanner: {e}")
-            return []
+            return {}
 
     def _analyze_funding_consistency(self, symbol):
         """
-        Analisa o histórico.
-        Modo Agressivo: Aceita histórico ruim, desde que a Média seja boa 
-        e o momento ATUAL seja positivo.
+        Analisa o histórico e retorna o Funding Rate atual validado.
+        Retorno: (True/False, current_rate)
         """
         try:
+            # Busca histórico
             history = self.exchange_swap.fetch_funding_rate_history(symbol, limit=20)
             
             if not history or len(history) < 9: 
-                return False
+                return False, 0.0
             
             recent_rates = [entry['fundingRate'] for entry in history[-9:]]
             
-            # O lucro dos positivos pagou os negativos e sobrou.
+            # 1. Média Atrativa
             avg_rate = sum(recent_rates) / len(recent_rates)
             if avg_rate < 0.0001: 
-                return False
+                return False, 0.0
 
-            # 2. O momento atual TEM que ser positivo.
-            if recent_rates[-1] < 0:
-                return False
-                        
-            return True
+            # 2. Momento Atual Positivo
+            current_rate = recent_rates[-1]
+            if current_rate < 0:
+                return False, 0.0
+            
+            return True, current_rate
+            
         except: 
-            return False
+            return False, 0.0
 
     def check_entry_opportunity(self, symbol, spot_symbol, price_spot, price_swap, funding_rate):
         """
@@ -877,22 +885,37 @@ class CashAndCarryBot:
             bal_spot_raw = self.exchange_spot.fetch_balance()
             free_spot = bal_spot_raw.get('USDT', {}).get('free', 0.0)
 
+            time.sleep(1)
+
             bal_swap_raw = self.exchange_swap.fetch_balance()
             free_swap = bal_swap_raw.get('USDT', {}).get('free', 0.0)
 
             current_total_real = free_spot + free_swap
 
+            # Se self.position não existir ainda, assume None
+            current_position = getattr(self, 'position', None)
+            
+            # Se self.last_real_balance não existir, assume 0.0
+            last_balance = getattr(self, 'last_real_balance', 0.0)
+
             # --- CENÁRIO A: Bot Líquido (Sem Posição) ---
-            if self.position is None:
+            if current_position is None:
                 
                 # Lógica de Detecção de Aporte (Baseada no Total)
-                if hasattr(self, 'last_real_balance') and self.last_real_balance > 0:
-                    balance_diff = current_total_real - self.last_real_balance
+                if last_balance > 0:
+                    balance_diff = current_total_real - last_balance
                     
                     if balance_diff > 1.0:
                         LOGGER.info(f"Saldo total aumentou em ${balance_diff:.2f} (Aporte Detectado)")
-                        self.pending_deposit_usd += balance_diff
-                        self._save_state()
+                        # Pega o valor atual de pending_deposit (ou 0 se não existir)
+                        current_pending = getattr(self, 'pending_deposit_usd', 0.0)
+                        
+                        # Soma e atribui
+                        self.pending_deposit_usd = current_pending + balance_diff
+                        
+                        # Só salva se o método _save_state já estiver pronto (segurança extra)
+                        if hasattr(self, '_save_state'):
+                            self._save_state()
 
                 # Atualiza a referência do último saldo conhecido
                 self.last_real_balance = current_total_real
@@ -922,9 +945,12 @@ class CashAndCarryBot:
 
                     self.exchange_spot.transfer('USDT', amount_to_transfer, 'spot', 'future')
                     
-                    # Adiciona ao pendente para reinvestir
-                    self.pending_deposit_usd += free_spot
-                    self._save_state()
+                    # Atualiza pendente com segurança
+                    current_pending = getattr(self, 'pending_deposit_usd', 0.0)
+                    self.pending_deposit_usd = current_pending + free_spot
+                    
+                    if hasattr(self, '_save_state'):
+                        self._save_state()
                 
                 return current_total_real
 
