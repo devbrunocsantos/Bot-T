@@ -259,12 +259,19 @@ class CashAndCarryBot:
         try:
             # Busca histórico
             history = self.exchange_swap.fetch_funding_rate_history(symbol, limit=20)
+
+            time.sleep(0.5)  # Pausa para evitar sobrecarga de API
+
+            current_rate = self.exchange_swap.fetch_funding_rate(symbol)['fundingRate']
+
+            if not history or not current_rate:
+                LOGGER.warning(f"Dados insuficientes para análise de {symbol}. Histórico ou funding atual indisponível.")
+                return False, 0.0, 0.0
             
-            if not history or len(history) < 9: 
+            if len(history) < 9: 
                 return False, 0.0, 0.0
             
             recent_rates = [entry['fundingRate'] for entry in history[-9:]]
-            current_rate = recent_rates[-1]
             
             # 1. Média Atrativa
             avg_rate = sum(recent_rates) / len(recent_rates)
