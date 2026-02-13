@@ -84,19 +84,11 @@ def main():
                         last_scan_time = current_time
                         continue
 
-                    top_pairs, tickers_swap = bot.get_top_volume_pairs()
-
-                    # --- Batch Fetching Híbrido (Spot + Swaps) ---
-                    all_tickers = {}
+                    top_pairs, tickers_swap, tickers_spot = bot.get_top_volume_pairs()
                     
                     if top_pairs:
                         try:
                             LOGGER.info("Baixando dados de mercado (Spot + Swaps) e Funding...")
-                            # 2. Busca Tickers de Spot
-                            tickers_spot = bot.exchange_spot.fetch_tickers()
-                            
-                            # 3. Funde os dicionários
-                            all_tickers = {**tickers_swap, **tickers_spot}
                                 
                         except Exception as e:
                             LOGGER.error(f"Erro crítico ao baixar dados em lote: {e}")
@@ -129,14 +121,11 @@ def main():
                             # Busca Direta
                             if symbol_spot_candidate in tickers_spot:
                                 found_spot = symbol_spot_candidate
-                            
-                            # --- Verificações Finais ---
-                            if not found_spot:
+                                price_spot = tickers_spot[found_spot]['last']
+                                price_swap = tickers_swap[pair]['last']
+                            else:
                                 reasons.append(f"MISSING_SPOT_DATA ({base_swap_clean})")
                                 continue
-
-                            price_swap = all_tickers[pair]['last']
-                            price_spot = all_tickers[found_spot]['last']
 
                             # Passa os dados já processados
                             is_viable, fr, reason = bot.check_entry_opportunity(

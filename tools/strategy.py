@@ -193,15 +193,25 @@ class CashAndCarryBot:
         """
         try:
             LOGGER.info("Iniciando varredura dinâmica de mercado...")
-            tickers = self.exchange_swap.fetch_tickers()
+            # Busca Tickers de ambos os mercados
+            tickers_swap = self.exchange_swap.fetch_tickers()
+            tickers_spot = self.exchange_spot.fetch_tickers()
+
+            available_spot_pairs = set(tickers_spot.keys())
             
             # Pré-filtro de volume
             candidates = []
-            for symbol, data in tickers.items():
-                if '/USDT:USDT' in symbol and data['quoteVolume'] >= MIN_24H_VOLUME_USD:
-                    candidates.append(symbol)
-            
-            top_candidates = sorted(candidates, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
+            for symbol, data in tickers_swap.items():
+                if '/USDT:USDT' in symbol:
+
+                    spot_equivalent = symbol.split(':')[0]
+
+                    if spot_equivalent in available_spot_pairs:
+                        if data['quoteVolume'] >= MIN_24H_VOLUME_USD:
+
+                            candidates.append(symbol)
+
+            top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:50]
             
             valid_pairs_data = {} 
 
@@ -213,7 +223,7 @@ class CashAndCarryBot:
                     valid_pairs_data[symbol] = rate
                     LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}")
             
-            return valid_pairs_data, tickers
+            return valid_pairs_data, tickers_swap, tickers_spot
             
         except Exception as e:
             LOGGER.error(f"Erro no scanner: {e}")
