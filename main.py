@@ -36,7 +36,7 @@ def main():
     
     time.sleep(1)
 
-    #bot.start_guardian()
+    bot.start_guardian()
     
     # Variáveis de controle de tempo
     last_scan_time = 0
