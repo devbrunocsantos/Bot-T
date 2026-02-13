@@ -207,11 +207,11 @@ class CashAndCarryBot:
 
             for symbol in top_candidates:
                 # O filtro agora retorna (Bool, Rate)
-                is_valid, rate = self._analyze_funding_consistency(symbol)
+                is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
                 
                 if is_valid:
                     valid_pairs_data[symbol] = rate
-                    LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Médio/Atual: {rate:.4%}")
+                    LOGGER.info(f"[OK] APROVADO: {symbol} | Funding Médio: {avg_rate:.4%} | Funding Atual: {rate:.4%}")
             
             return valid_pairs_data, tickers
             
@@ -243,7 +243,7 @@ class CashAndCarryBot:
             if current_rate < 0:
                 return False, 0.0
             
-            return True, current_rate
+            return True, current_rate, avg_rate
             
         except: 
             return False, 0.0
