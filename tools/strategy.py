@@ -305,6 +305,8 @@ class CashAndCarryBot:
             # Projeção do Funding Real
             projected_return = (funding_rate * funding_frequency_daily) * PAYBACK_PERIOD_DAYS
 
+            LOGGER.info(f"Projeção de Funding: {symbol} | {projected_return}")
+
             if projected_return < hurdle_rate:
                 return False, funding_rate, "LOW_PROFIT_VS_FEES"
 
