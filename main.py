@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from collections import Counter
 import requests
-from configs.config import LOGGER, BRL_USD_RATE, MIN_ORDER_VALUE_USD
+from configs.config import *
 from tools.database import DataManager
 from tools.strategy import CashAndCarryBot
 
@@ -101,7 +101,7 @@ def main():
                     final_reason = "ENTRY_EXECUTED"
 
                     if not top_pairs:
-                        LOGGER.warning("Nenhum par aprovado. Aguardando próximo ciclo...")
+                        LOGGER.info("Nenhum par aprovado. Aguardando próximo ciclo...")
                         last_scan_time = current_time
                         continue
 
@@ -137,7 +137,7 @@ def main():
                             )
 
                             if is_viable:
-                                LOGGER.info(f"Candidato Classificado: {pair} | Funding: {fr:.4%}")
+                                LOGGER.info(f"{COLOR_GREEN}Candidato Classificado: {pair} | Funding: {fr:.4%}{COLOR_RESET}")
                                 viable_opportunities.append({
                                     'pair': pair,
                                     'spot_symbol': found_spot,
@@ -146,6 +146,7 @@ def main():
                                     'price_swap': price_swap
                                 })
                             else:
+                                LOGGER.info(f"{COLOR_RED}Candidato Rejeitado: {pair} | Funding: {fr:.4%} | Motivo: {reason}{COLOR_RESET}")
                                 unviable_opportunities.append({
                                     'pair': pair,
                                     'spot_symbol': found_spot,
@@ -170,9 +171,9 @@ def main():
                             reverse=True
                         )[0]
 
-                        LOGGER.info("MELHOR OPORTUNIDADE:")
-                        LOGGER.info(f"Par: {best_opportunity['pair']}")
-                        LOGGER.info(f"Funding: {best_opportunity['funding_rate']:.4%}")
+                        LOGGER.info(f"{COLOR_CYAN}MELHOR OPORTUNIDADE:{COLOR_RESET}")
+                        LOGGER.info(f"{COLOR_CYAN}Par: {best_opportunity['pair']}{COLOR_RESET}")
+                        LOGGER.info(f"{COLOR_CYAN}Funding: {best_opportunity['funding_rate']:.4%}{COLOR_RESET}")
 
                         # Executa entrada
                         success = bot.execute_real_entry(

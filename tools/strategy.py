@@ -333,12 +333,14 @@ class CashAndCarryBot:
             
             # O retorno tem que pagar as Taxas + O Lucro Mínimo
             hurdle_rate = total_fees_real + required_net_profit
+            msg_hurdle_rate = f"{COLOR_RED}{hurdle_rate}{COLOR_RESET}"
 
             # Projeção do Funding Real
             projected_return = (funding_rate * funding_frequency_daily) * PAYBACK_PERIOD_DAYS
+            msg_projected_return = f"{COLOR_GREEN}{projected_return}{COLOR_RESET}" if projected_return >= hurdle_rate else f"{COLOR_RED}{projected_return}{COLOR_RESET}"
 
-            LOGGER.info(f"Projeção de Funding: {symbol} | {projected_return}")
-            LOGGER.info(f"Funding para 0.15: {hurdle_rate}")
+            LOGGER.info(f"Projeção de Funding: {symbol} | {msg_projected_return}")
+            LOGGER.info(f"Funding para 0.15: {msg_hurdle_rate}")
 
             if projected_return < hurdle_rate:
                 return False, funding_rate, "LOW_PROFIT_VS_FEES"
@@ -347,7 +349,7 @@ class CashAndCarryBot:
             basis_percent = (price_swap - price_spot) / price_spot
 
             if basis_percent < NEGATIVE_FUNDING_THRESHOLD: 
-                return False, funding_rate, f"BACKWARDATION ({basis_percent:.4%})"
+                return False, funding_rate, f"BACKWARDATION ({basis_percent})"
 
             return True, funding_rate, "SUCCESS"
 
@@ -432,7 +434,7 @@ class CashAndCarryBot:
         
         # CENÁRIO A: SUCESSO TOTAL
         if spot_ok and swap_ok:
-            LOGGER.info(f"SUCESSO TOTAL! Ordens executadas. Spot ID: {order_spot['id']} | Swap ID: {order_swap['id']}")
+            LOGGER.info(f"{COLOR_GREEN}SUCESSO TOTAL! Ordens executadas. Spot ID: {order_spot['id']} | Swap ID: {order_swap['id']}{COLOR_RESET}")
             
             # Atualiza estado interno do bot com dados reais da exchange
             self.position = {
@@ -448,7 +450,7 @@ class CashAndCarryBot:
 
         # CENÁRIO B: FALHA PARCIAL (PERIGO!) -> ROLLBACK
         else:
-            LOGGER.critical("FALHA NA EXECUÇÃO SIMULTÂNEA! Iniciando Protocolo de Rollback...")
+            LOGGER.critical(f"{COLOR_RED}FALHA NA EXECUÇÃO SIMULTÂNEA! Iniciando Protocolo de Rollback...{COLOR_RESET}")
             
             # Se comprou Spot mas falhou no Futuro -> Vende o Spot a mercado
             if spot_ok and not swap_ok:
@@ -457,7 +459,7 @@ class CashAndCarryBot:
                     self.exchange_spot.create_market_sell_order(spot_symbol, order_spot['filled'])
                     LOGGER.info("Rollback Spot concluído.")
                 except Exception as e:
-                    LOGGER.critical(f"FALHA GRAVE NO ROLLBACK SPOT: {e}")
+                    LOGGER.critical(f"{COLOR_RED}FALHA GRAVE NO ROLLBACK SPOT: {e}{COLOR_RESET}")
 
             # Se vendeu Futuro mas falhou no Spot -> Fecha o Futuro a mercado
             elif swap_ok and not spot_ok:
@@ -466,7 +468,7 @@ class CashAndCarryBot:
                     self.exchange_swap.create_market_buy_order(symbol, order_swap['filled'])
                     LOGGER.info("Rollback Swap concluído.")
                 except Exception as e:
-                    LOGGER.critical(f"FALHA GRAVE NO ROLLBACK SWAP: {e}")
+                    LOGGER.critical(f"{COLOR_RED}FALHA GRAVE NO ROLLBACK SWAP: {e}{COLOR_RESET}")
             
             return False
 
@@ -507,7 +509,7 @@ class CashAndCarryBot:
 
             # --- Circuit Breaker ---
             if current_funding < NEGATIVE_FUNDING_THRESHOLD:
-                LOGGER.warning(f"SAIDA FORÇADA: Funding negativo crítico ({current_funding:.4%})")
+                LOGGER.warning(f"{COLOR_RED}SAIDA FORÇADA: Funding negativo crítico ({current_funding:.4%}){COLOR_RESET}")
                 self.execute_real_close(symbol, spot_symbol, self.position['size'], "CIRCUIT_BREAKER")
                 return
 
@@ -608,7 +610,7 @@ class CashAndCarryBot:
 
             # CASO PERFEITO: Ambos saíram
             if spot_done and swap_done:
-                LOGGER.info("POSIÇÃO ENCERRADA COM SUCESSO NO MODO REAL.")
+                LOGGER.info(f"{COLOR_CYAN}POSIÇÃO ENCERRADA COM SUCESSO NO MODO REAL.{COLOR_RESET}")
                 self._clean_spot_dust(spot_symbol)
                 self.position = None
                 self._save_state()
@@ -616,7 +618,7 @@ class CashAndCarryBot:
 
             # CASO DE ERRO:Força saída a Mercado
             else:
-                LOGGER.critical("ERRO NO FECHAMENTO SIMULTÂNEO! Iniciando Saída de Emergência (Market Order)...")
+                LOGGER.critical(f"{COLOR_RED}ERRO NO FECHAMENTO SIMULTÂNEO! Iniciando Saída de Emergência (Market Order)...{COLOR_RESET}")
                 
                 # Se Spot não vendeu, vende a mercado agora
                 if not spot_done:
@@ -624,7 +626,7 @@ class CashAndCarryBot:
                         LOGGER.warning("Forçando Venda de Spot a Mercado...")
                         self.exchange_spot.create_market_sell_order(spot_symbol, qty_spot)
                     except Exception as e:
-                        LOGGER.critical(f"FALHA CRÍTICA AO VENDER SPOT: {e}")
+                        LOGGER.critical(f"{COLOR_RED}FALHA CRÍTICA AO VENDER SPOT: {e}{COLOR_RESET}")
 
                 # Se Swap não fechou, compra a mercado agora
                 if not swap_done:
@@ -632,7 +634,7 @@ class CashAndCarryBot:
                         LOGGER.warning("Forçando Fechamento de Swap a Mercado...")
                         self.exchange_swap.create_market_buy_order(symbol, qty_swap)
                     except Exception as e:
-                        LOGGER.critical(f"FALHA CRÍTICA AO FECHAR SWAP: {e}")
+                        LOGGER.critical(f"{COLOR_RED}FALHA CRÍTICA AO FECHAR SWAP: {e}{COLOR_RESET}")
                 
                 # Assume que limpou tudo após a emergência
                 self.position = None
@@ -640,7 +642,7 @@ class CashAndCarryBot:
                 return True
 
         except Exception as e:
-            LOGGER.error(f"Erro catastrófico no fechamento real: {e}")
+            LOGGER.error(f"{COLOR_RED}Erro catastrófico no fechamento real: {e}{COLOR_RESET}")
             return False
 
     def _process_compounding(self, symbol, spot_symbol, price_spot, price_swap):
@@ -759,12 +761,12 @@ class CashAndCarryBot:
             self.accumulated_fees += actual_fees
             self.pending_deposit_usd = 0.0           # Zera o pendente
             
-            LOGGER.info(f"REINVESTIMENTO SUCESSO: +{filled_qty} moedas. Novo PM Spot: {avg_price_spot:.4f}")
+            LOGGER.info(f"{COLOR_GREEN}REINVESTIMENTO SUCESSO: +{filled_qty} moedas. Novo PM Spot: {avg_price_spot:.4f}{COLOR_RESET}")
             self._save_state()
 
         else:
             # --- Lógica de Rollback (Segurança) ---
-            LOGGER.critical("FALHA PARCIAL NO REINVESTIMENTO! Revertendo...")
+            LOGGER.critical(f"{COLOR_RED}FALHA PARCIAL NO REINVESTIMENTO! Revertendo...{COLOR_RESET}")
             
             # Se comprou Spot mas falhou Swap -> Vende Spot
             if spot_ok and not swap_ok:
@@ -772,7 +774,7 @@ class CashAndCarryBot:
                     self.exchange_spot.create_market_sell_order(spot_symbol, order_spot['filled'])
                     LOGGER.info("Rollback: Spot extra vendido.")
                 except Exception as e:
-                    LOGGER.critical(f"ERRO ROLLBACK SPOT: {e}")
+                    LOGGER.critical(f"{COLOR_RED}ERRO ROLLBACK SPOT: {e}{COLOR_RESET}")
 
             # Se vendeu Swap mas falhou Spot -> Fecha Swap
             elif swap_ok and not spot_ok:
@@ -780,7 +782,7 @@ class CashAndCarryBot:
                     self.exchange_swap.create_market_buy_order(symbol, order_swap['filled'])
                     LOGGER.info("Rollback: Short extra fechado.")
                 except Exception as e:
-                    LOGGER.critical(f"ERRO ROLLBACK SWAP: {e}")
+                    LOGGER.critical(f"{COLOR_RED}ERRO ROLLBACK SWAP: {e}{COLOR_RESET}")
 
     def _get_real_fee_rate(self, symbol, swap=False):
         """
@@ -975,7 +977,7 @@ class CashAndCarryBot:
                 if free_spot > 5.0:
                     amount_to_transfer = free_spot / 2
                     
-                    LOGGER.info(f"APORTE DETECTADO COM POSIÇÃO ABERTA! Spot Livre: ${free_spot:.2f}")
+                    LOGGER.info(f"{COLOR_CYAN}APORTE DETECTADO COM POSIÇÃO ABERTA! Spot Livre: ${free_spot:.2f}{COLOR_RESET}")
                     LOGGER.info(f"Enviando ${amount_to_transfer:.2f} para margem...")
 
                     self.exchange_spot.transfer('USDT', amount_to_transfer, 'spot', 'future')
