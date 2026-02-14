@@ -47,9 +47,7 @@ NEGATIVE_FUNDING_THRESHOLD = -0.0001    # Sai se o funding for pior que -0.01%
 FEE_TAKER_SPOT_DEFAULT = 0.001          # 0.10%
 FEE_TAKER_SWAP_DEFAULT = 0.0005         # 0.05%
 SLIPPAGE_SIMULATED = 0.0005             # 0.05% (Conservador para garantir realismo)
-PAYBACK_PERIOD_DAYS = 3.0               # Meta: Recuperar o investimento em até 3 dias
-MIN_NET_APR = 0.15                      # Meta: 15% ao ano LIVRE de taxas (Net Profit)
-TARGET_FUNDING = 0.005                  # 0.005% (Meta mínima aceitável)
+TARGET_FUNDING = (0.15 / 365) * 3.0     # Meta mínima aceitável
 EXIT_SCORE_LIMIT = 20                   # Limite para sair (aprox. 1h40min se for linear)
 
 # --- Gestão de Conversões ---

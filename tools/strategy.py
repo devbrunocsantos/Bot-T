@@ -241,8 +241,19 @@ class CashAndCarryBot:
                 # O filtro agora retorna (Bool, Rate)
                 is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
 
-                rate_msg = f"{COLOR_GREEN}{rate:.4%}{COLOR_RESET}" if rate > 0 else f"{COLOR_RED}{rate:.4%}{COLOR_RESET}"
-                avg_msg = f"{COLOR_GREEN}{avg_rate:.4%}{COLOR_RESET}" if avg_rate > 0 else f"{COLOR_RED}{avg_rate:.4%}{COLOR_RESET}"
+                if rate >= 0.0001:
+                    rate_msg = f"{COLOR_GREEN}{rate:.4%}{COLOR_RESET}"
+                elif 0 > rate < 0.0001:
+                    rate_msg = f"{COLOR_CYAN}{rate:.4%}{COLOR_RESET}"
+                else:
+                    rate_msg = f"{COLOR_RED}{rate:.4%}{COLOR_RESET}"
+
+                if avg_rate >= 0.0001:
+                    avg_msg = f"{COLOR_GREEN}{avg_rate:.4%}{COLOR_RESET}"
+                elif 0 > avg_rate < 0.0001:
+                    avg_msg = f"{COLOR_CYAN}{avg_rate:.4%}{COLOR_RESET}"
+                else:
+                    avg_msg = f"{COLOR_RED}{avg_rate:.4%}{COLOR_RESET}"
 
                 time.sleep(0.5)  # Pequena pausa para evitar sobrecarga de API
                 
@@ -348,16 +359,13 @@ class CashAndCarryBot:
                 # Mantém o fallback silenciosamente em caso de erro de lookup, mas loga se necessário
                 LOGGER.debug(f"Não foi possível obter intervalo dinâmico para {symbol}, usando 8h: {e}")
                 pass
-
-            # Fórmula: Meta Anual / 365 * Dias
-            required_net_profit = (MIN_NET_APR / 365) * PAYBACK_PERIOD_DAYS
             
             # O retorno tem que pagar as Taxas + O Lucro Mínimo
-            hurdle_rate = total_fees_real + required_net_profit
+            hurdle_rate = total_fees_real + TARGET_FUNDING
             msg_hurdle_rate = f"{COLOR_RED}{hurdle_rate:.4%}{COLOR_RESET}"
 
             # Projeção do Funding Real
-            projected_return = (funding_rate * funding_frequency_daily) * PAYBACK_PERIOD_DAYS
+            projected_return = (funding_rate * funding_frequency_daily) * 3.0 # Projeta para 3 dias (Payback Period)
             msg_projected_return = f"{COLOR_GREEN}{projected_return:.4%}{COLOR_RESET}" if projected_return >= hurdle_rate else f"{COLOR_RED}{projected_return:.4%}{COLOR_RESET}"
 
             LOGGER.info(f"Projeção de Funding: {symbol} | {msg_projected_return}")
