@@ -57,5 +57,6 @@ MIN_ORDER_VALUE_USD = 11.00             # Mínimo para abrir ordem na Binance co
 # --- Cores para Logs ---
 COLOR_GREEN = "\033[92m"
 COLOR_RED = "\033[91m"
+COLOR_YELLOW = "\033[93m"
 COLOR_CYAN = "\033[96m"
 COLOR_RESET = "\033[0m"
