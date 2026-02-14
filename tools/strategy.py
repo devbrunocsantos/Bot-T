@@ -254,9 +254,9 @@ class CashAndCarryBot:
                         'volume': volume_24h
                     }
 
-                    LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
+                    LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol}{COLOR_RESET} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
                 else:
-                    LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
+                    LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol}{COLOR_RESET} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
             
             LOGGER.info("Fim da varredura dinâmica de mercado.")
             return valid_pairs_data, tickers_swap, tickers_spot
