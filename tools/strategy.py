@@ -233,7 +233,7 @@ class CashAndCarryBot:
                             if is_active:
                                 candidates.append(symbol)
 
-            top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:25]
+            top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:50]
             
             valid_pairs_data = {} 
 
