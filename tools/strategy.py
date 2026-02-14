@@ -224,10 +224,10 @@ class CashAndCarryBot:
                             swap_active = swap_market.get('active', False)
                             spot_active = spot_market.get('active', False)
 
-                            swap_fmt = f"{COLOR_GREEN}True{COLOR_CYAN}" if swap_active else f"{COLOR_RED}False{COLOR_CYAN}"
-                            spot_fmt = f"{COLOR_GREEN}True{COLOR_CYAN}" if spot_active else f"{COLOR_RED}False{COLOR_CYAN}"
+                            swap_fmt = f"{COLOR_GREEN}True{COLOR_RESET}" if swap_active else f"{COLOR_RED}False{COLOR_RESET}"
+                            spot_fmt = f"{COLOR_GREEN}True{COLOR_RESET}" if spot_active else f"{COLOR_RED}False{COLOR_RESET}"
 
-                            LOGGER.info(f"{COLOR_CYAN}Par Candidato: {symbol} | Swap: {swap_fmt} | Spot: {spot_fmt}{COLOR_RESET}")
+                            LOGGER.info(f"Par Candidato: {COLOR_CYAN}{symbol}{COLOR_RESET} | Swap: {swap_fmt} | Spot: {spot_fmt}{COLOR_RESET}")
                             is_active = swap_active and spot_active
 
                             if is_active:
@@ -254,9 +254,9 @@ class CashAndCarryBot:
                         'volume': volume_24h
                     }
 
-                    LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol}{COLOR_RESET} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
+                    LOGGER.info(f"{COLOR_GREEN}[APROVADO]{COLOR_RESET}: {COLOR_CYAN}{symbol}{COLOR_RESET} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}")
                 else:
-                    LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol}{COLOR_RESET} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
+                    LOGGER.info(f"{COLOR_RED}[REJEITADO]{COLOR_RESET}: {COLOR_CYAN}{symbol}{COLOR_RESET} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}")
             
             LOGGER.info("Fim da varredura dinâmica de mercado.")
             return valid_pairs_data, tickers_swap, tickers_spot
