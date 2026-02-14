@@ -250,7 +250,7 @@ class CashAndCarryBot:
                         'funding_rate': rate,
                         'volume': volume_24h
                     }
-                    
+
                     LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
                 else:
                     LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
