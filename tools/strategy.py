@@ -241,16 +241,16 @@ class CashAndCarryBot:
                 # O filtro agora retorna (Bool, Rate)
                 is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
 
-                if rate >= 0.0001:
+                if rate >= TARGET_FUNDING:
                     rate_msg = f"{COLOR_GREEN}{rate:.4%}{COLOR_RESET}"
-                elif 0 > rate < 0.0001:
+                elif 0 <= rate < TARGET_FUNDING:
                     rate_msg = f"{COLOR_YELLOW}{rate:.4%}{COLOR_RESET}"
                 else:
                     rate_msg = f"{COLOR_RED}{rate:.4%}{COLOR_RESET}"
 
                 if avg_rate >= 0.0001:
                     avg_msg = f"{COLOR_GREEN}{avg_rate:.4%}{COLOR_RESET}"
-                elif 0 > avg_rate < 0.0001:
+                elif 0 <= avg_rate < 0.0001:
                     avg_msg = f"{COLOR_YELLOW}{avg_rate:.4%}{COLOR_RESET}"
                 else:
                     avg_msg = f"{COLOR_RED}{avg_rate:.4%}{COLOR_RESET}"
