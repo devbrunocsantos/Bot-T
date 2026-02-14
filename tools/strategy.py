@@ -233,7 +233,7 @@ class CashAndCarryBot:
                             if is_active:
                                 candidates.append(symbol)
 
-            top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:25]
+            top_candidates = sorted(candidates, key=lambda x: tickers_swap[x]['quoteVolume'], reverse=True)[:100]
             
             valid_pairs_data = {} 
 
@@ -244,7 +244,13 @@ class CashAndCarryBot:
                 time.sleep(0.5)  # Pequena pausa para evitar sobrecarga de API
                 
                 if is_valid:
-                    valid_pairs_data[symbol] = rate
+                    volume_24h = tickers_swap[symbol]['quoteVolume']
+
+                    valid_pairs_data[symbol] = {
+                        'funding_rate': rate,
+                        'volume': volume_24h
+                    }
+                    
                     LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
                 else:
                     LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
@@ -263,7 +269,7 @@ class CashAndCarryBot:
         """
         try:
             # Busca histórico
-            history = self.exchange_swap.fetch_funding_rate_history(symbol, limit=20)
+            history = self.exchange_swap.fetch_funding_rate_history(symbol, limit=9)
 
             time.sleep(0.5)  # Pausa para evitar sobrecarga de API
 

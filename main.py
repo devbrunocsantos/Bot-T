@@ -108,7 +108,7 @@ def main():
                     viable_opportunities = []
                     unviable_opportunities = []
                     
-                    for pair, fr_rate in top_pairs.items():
+                    for pair, fr_rate, volume in top_pairs.items():
                         try:
                             # Definições Iniciais
                             symbol_spot_candidate = pair.split(':')[0] 
@@ -143,7 +143,8 @@ def main():
                                     'spot_symbol': found_spot,
                                     'funding_rate': fr,
                                     'price_spot': price_spot,
-                                    'price_swap': price_swap
+                                    'price_swap': price_swap,
+                                    'volume': volume
                                 })
                             else:
                                 LOGGER.info(f"{COLOR_RED}Candidato Rejeitado: {pair} | Funding: {fr:.4%} | Motivo: {reason}{COLOR_RESET}")
@@ -152,7 +153,8 @@ def main():
                                     'spot_symbol': found_spot,
                                     'funding_rate': fr,
                                     'price_spot': price_spot,
-                                    'price_swap': price_swap
+                                    'price_swap': price_swap,
+                                    'volume': volume
                                 })
 
                             reasons.append(reason)
@@ -167,7 +169,7 @@ def main():
                     if viable_opportunities:
                         best_opportunity = sorted(
                             viable_opportunities, 
-                            key=lambda x: x['funding_rate'], 
+                            key=lambda x: (x['funding_rate'], x['volume']), 
                             reverse=True
                         )[0]
 
