@@ -242,7 +242,7 @@ class CashAndCarryBot:
                 is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
 
                 rate_msg = f"{COLOR_GREEN}{rate:.4%}{COLOR_RESET}" if rate > 0 else f"{COLOR_RED}{rate:.4%}{COLOR_RESET}"
-                avg_msg = f"{COLOR_GREEN}{avg_rate * 100}%{COLOR_RESET}" if avg_rate > 0.0001 else f"{COLOR_RED}{avg_rate * 100}%{COLOR_RESET}"
+                avg_msg = f"{COLOR_GREEN}{avg_rate:.4%}{COLOR_RESET}" if avg_rate > 0.0001 else f"{COLOR_RED}{avg_rate:.4%}{COLOR_RESET}"
 
                 time.sleep(0.5)  # Pequena pausa para evitar sobrecarga de API
                 
