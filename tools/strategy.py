@@ -241,6 +241,9 @@ class CashAndCarryBot:
                 # O filtro agora retorna (Bool, Rate)
                 is_valid, rate, avg_rate = self._analyze_funding_consistency(symbol)
 
+                rate_msg = f"{COLOR_GREEN}{rate:.4%}{COLOR_RESET}" if rate > 0 else f"{COLOR_RED}{rate:.4%}{COLOR_RESET}"
+                avg_msg = f"{COLOR_GREEN}{avg_rate:.4%}{COLOR_RESET}" if avg_rate > 0.0001 else f"{COLOR_RED}{avg_rate:.4%}{COLOR_RESET}"
+
                 time.sleep(0.5)  # Pequena pausa para evitar sobrecarga de API
                 
                 if is_valid:
@@ -251,9 +254,9 @@ class CashAndCarryBot:
                         'volume': volume_24h
                     }
 
-                    LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
+                    LOGGER.info(f"{COLOR_GREEN}[APROVADO]: {symbol} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
                 else:
-                    LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate:.4%} | Funding Médio: {avg_rate:.4%}{COLOR_RESET}")
+                    LOGGER.info(f"{COLOR_RED}[REJEITADO]: {symbol} | Funding Atual: {rate_msg} | Funding Médio: {avg_msg}{COLOR_RESET}")
             
             LOGGER.info("Fim da varredura dinâmica de mercado.")
             return valid_pairs_data, tickers_swap, tickers_spot
