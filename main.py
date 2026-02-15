@@ -218,16 +218,19 @@ def main():
                 # Se tem posição, monitora
                 bot.monitor_and_manage(db_manager)
 
-            for _ in range(current_time, current_time + scan_interval, 1):
-                # Cálculo do tempo restante
-                remaining = int(current_time + scan_interval - time.time())
-
-                # Formatação profissional (02d garante dois dígitos com zero à esquerda)
+            while True:
+                # Calcula a diferença exata entre o momento atual e o alvo
+                remaining = int((current_time + scan_interval) - time.time())
+                
+                if remaining <= 0:
+                    break
+                    
                 mins, secs = divmod(remaining, 60)
-                timer_display = f"{mins:02d}:{secs:02d}"
+                print(f"Próximo ciclo em: {mins:02d}:{secs:02d}", end='\r', flush=True)
+                time.sleep(1)
 
-                # Saída com o Carriage Return e limpeza de linha
-                print(f"Próximo ciclo em: {timer_display}", end='\r', flush=True)
+            # Limpa a linha do timer antes de iniciar a lógica do bot
+            print(" " * 40, end='\r')
 
     except KeyboardInterrupt:
         LOGGER.info("Parando bot manualmente...")
