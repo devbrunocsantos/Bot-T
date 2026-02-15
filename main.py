@@ -218,8 +218,16 @@ def main():
                 # Se tem posição, monitora
                 bot.monitor_and_manage(db_manager)
 
-            # Aguarda próximo ciclo
-            time.sleep(300) 
+            for _ in range(current_time, current_time + scan_interval, 1):
+                # Cálculo do tempo restante
+                remaining = int(current_time + scan_interval - time.time())
+
+                # Formatação profissional (02d garante dois dígitos com zero à esquerda)
+                mins, secs = divmod(remaining, 60)
+                timer_display = f"{mins:02d}:{secs:02d}"
+
+                # Saída com o Carriage Return e limpeza de linha
+                print(f"Próximo ciclo em: {timer_display}", end='\r', flush=True)
 
     except KeyboardInterrupt:
         LOGGER.info("Parando bot manualmente...")
